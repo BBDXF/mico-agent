@@ -16,6 +16,7 @@ M.defaults = {
       "用户要求播放时，只要有一个结果明显最匹配就立即调用 music_play，不要征求确认；只有多个结果同样可能时才简短询问。",
       "曲库里外文歌手多用原名（如艾薇儿=Avril Lavigne），中文名搜不到时换原名再搜一次。",
       "本地曲库没有时 music_search 会自动在线搜索；用户明确要求在线/B站时传 online=true。",
+      "播客、访谈、讲座、相声、评书、有声书、节目、脱口秀、新闻等非歌曲内容，music_search 传 kind=\"audio\"。",
     }),
     max_steps = 8,
     max_history = 20,
@@ -34,6 +35,11 @@ M.defaults = {
   -- mode "proxy" (default): speaker plays http://127.0.0.1:PORT/stream/...;
   -- "download" (opt-in fallback): fetch to /tmp first (max_mb cap).
   playback = { mode = "proxy", max_mb = 30, buffer_kb = 1024 },
+  -- Online search filters: songs are 90–480 s singles; kind="audio" allows long items.
+  online = {
+    song_min_s = 90, song_max_s = 480, audio_max_s = 14400,
+    skip_keywords = "合集,串烧,歌单,连播,小时,循环,伴奏,教学,reaction",
+  },
   -- 边播边存: save online tracks to a WebDAV share while playing (off by default).
   save = {
     enabled = false, webdav_url = "", username = "", password = "",
@@ -84,6 +90,10 @@ M.schema = {
   { key = "playback.mode", label = "播放方式", type = "enum", options = { "proxy", "download" }, help = "proxy：音箱经本机代理流式播放；download：先下载到 /tmp" },
   { key = "playback.max_mb", label = "下载上限（MB）", type = "number", min = 1, max = 200, help = "download 模式下单个文件大小上限" },
   { key = "playback.buffer_kb", label = "代理缓冲（KB）", type = "number", integer = true, min = 64, max = 8192, help = "proxy 模式的缓冲大小" },
+  { key = "online.song_min_s", label = "在线歌曲最短（秒）", type = "number", integer = true, min = 0, max = 3600, help = "在线搜索歌曲时，时长低于此值的结果不播放（过滤片段、预告）" },
+  { key = "online.song_max_s", label = "在线歌曲最长（秒）", type = "number", integer = true, min = 60, max = 3600, help = "在线搜索歌曲时，时长超过此值的结果不播放（过滤合集、串烧）；没有单曲时会从分P/合集里挑出对应的一集" },
+  { key = "online.audio_max_s", label = "在线长音频最长（秒）", type = "number", integer = true, min = 60, max = 86400, help = "播客、访谈、讲座、相声等非歌曲内容的时长上限；短于 60 秒的结果不播放" },
+  { key = "online.skip_keywords", label = "在线歌曲跳过关键词", type = "string", help = "逗号分隔；在线歌曲标题包含任一关键词（不区分大小写）时不选" },
   { key = "save.enabled", label = "边播边存", type = "bool", help = "播放在线音乐源的歌曲时，同时通过 WebDAV 保存到 NAS（默认关闭）" },
   { key = "save.webdav_url", label = "WebDAV 目录地址", type = "string", help = "保存目录的 URL，如 http://nas:5005/音乐/在线收藏/；目录不存在时自动创建" },
   { key = "save.username", label = "WebDAV 用户名", type = "string", help = "Basic 认证用户名；留空不认证" },

@@ -12,7 +12,7 @@ make test     # 单元测试 + 集成测试（Python mock OpenAI 服务，dry-ru
 依赖：g++（C++14）、libcurl 开发头文件。Lua 5.1.5 与 nlohmann/json 3.11.3 已放在 `third_party/`。
 目标固件（1.77.6）自带 glibc 2.25、libstdc++ 6.0.22、libcurl 4.4.0，只动态链接 libc/libstdc++/libcurl。
 
-`make` 通过 `-D` 注入版本信息：`MICO_VERSION`（默认 `0.2.0`，可 `make MICO_VERSION=x.y.z`）、
+`make` 通过 `-D` 注入版本信息：`MICO_VERSION`（默认 `0.2.1`，可 `make MICO_VERSION=x.y.z`）、
 构建时 `git rev-parse --short HEAD`（失败为 `unknown`）、构建时间；运行时 `mico.version()` / `GET /api/status` 的 `version` 字段
 还包含 Lua 版本、libcurl 版本与编译器。
 
@@ -54,7 +54,13 @@ Web 保存时合并写回配置文件（格式化 JSON）并立即生效（LLM�
 插件返回表 `{name, type="local"|"online", version, description, setup(cfg, all_cfg), stream(id) -> url, headers, on_play(id)?, available()?}`：
 
 - `local`：`list_tracks()` → `{ {id,title,artist,album,duration}, ... }`；全部写入模糊索引 `music`，id 为 `插件名:id`。
-- `online`：`search(query, limit)` → 同上；仅在本地无好结果（分数 < 0.6）或用户说“在线”时使用。
+- `online`：`search(query, limit, opts)` → 同上（可带 `duration` 秒、`play` 播放量）；仅在本地无好结果（分数 < 0.6）或用户说“在线”时使用。
+  `opts.kind="song"` 时插件应只返回短视频（`opts.long` 为真时不限时长，用于找分 P / 合集），`"audio"` 不过滤。
+  可选 `parts(id)` 返回分 P / 合集条目 `{id, title, duration}`；在线音乐源插件的 id 为 `BVxxx`（第一 P）或 `BVxxx:<cid>`（指定分 P），`stream` 按 cid 取流。
+  核心筛选（`online.*`）：歌曲时长须在 `song_min_s`–`song_max_s`（默认 90–480 秒），标题含 `skip_keywords` 的排除，按模糊匹配分再按播放量排序；
+  没有单曲时查看前 3 个长视频的分 P / 合集，取标题匹配 ≥ 0.6 且时长合格的一集；仍没有则交给 LLM。
+  只说歌手（“X的歌”或命中曲库歌手）的在线请求搜 “X 歌曲”，从提到该歌手的单曲里随机放一首。
+  `kind="audio"`（播客/访谈/讲座/相声等，快路径按关键词识别，`music_search` 传 `kind`）：不做歌曲过滤，60 秒–`audio_max_s`，从不边播边存。
 - **插件配置写在插件文件里**：文件顶部 `M.config = {...}`，每项带中文注释（含义/示例/默认值）；
   `setup(M.config, all_cfg)` 在加载与配置变更时调用。`config.json` 不再有插件配置段。
   环境变量仍在运行时覆盖：`MICO_FN_URL/USER/PASS/AUTHX_PREFIX/CLIENT_KEY/TIMEOUT`，在线音乐源插件也有对应的环境变量。
@@ -185,7 +191,7 @@ C++ 与 `mico.log` 共用一个日志出口（`src/logger.cpp`）：配置 `log.
 |---|---|
 | `run_shell` | 执行命令（默认 10 s 超时，最大 60 s，输出截断 4000 字节）；`MICO_ENABLE_SHELL=0` 关闭，`shell_allow` 可设白名单 |
 | `http_request` | 类 curl 的 HTTP 请求 |
-| `music_search` | 曲库模糊搜索（首次自动同步索引；无结果回退飞牛服务端搜索，仍无好结果时附带在线结果）；`online=true` 只搜在线音乐源插件 |
+| `music_search` | 曲库模糊搜索（首次自动同步索引；无结果回退飞牛服务端搜索，仍无好结果时附带在线结果）；`online=true` 只搜在线音乐源插件；`kind="audio"` 搜播客/访谈等长音频 |
 | `music_play` / `music_stop` / `music_now_playing` | 播放控制；`music_play` 接受本地与在线 id（`<插件名>:<id>`），裸 id 视为飞牛 guid |
 | `get_time` | 时间（自定义工具示例：`scripts/tools/get_time.lua`） |
 

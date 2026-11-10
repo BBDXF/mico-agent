@@ -244,7 +244,9 @@ end
 -- end
 
 -- type = "online" 时必需：搜索，返回同样格式的列表（最多 limit 条）。
-function M.search(query, limit)
+-- opts.kind = "song"（歌曲，核心会按时长 90–480 秒过滤）或 "audio"（播客/访谈等长音频）。
+-- 结果可带 duration（秒）、play（播放量，用于排序）。
+function M.search(query, limit, opts)
   local r = mico.http({ url = M.config.url .. "/search?q=" .. query, timeout_ms = 10000 })
   if r.error then return nil, r.error end
   local j = mico.json_decode(r.body) or {}
@@ -261,6 +263,10 @@ end
 function M.stream(id)
   return M.config.url .. "/stream/" .. id, { Authorization = "Bearer " .. M.config.token }
 end
+
+-- 可选（online）：分 P / 合集展开，没有单曲符合时用于挑出对应的一集。
+-- 返回 { {id = "可传给 stream 的 id", title = "分P标题", duration = 秒}, ... }
+-- function M.parts(id) return {} end
 
 -- 可选：开始播放后调用（如上报播放记录）。
 -- function M.on_play(id) end
@@ -317,10 +323,11 @@ function M.sync_index(index_name)
 end
 
 -- Searches enabled online plugins; ids are namespaced.
-function M.search_online(query, limit)
+-- opts.kind: "song" | "audio" (passed through to plugins).
+function M.search_online(query, limit, opts)
   local out, errs = {}, {}
   for _, p in ipairs(M.of_type("online")) do
-    local ok, list, err = pcall(p.search, query, limit or 5)
+    local ok, list, err = pcall(p.search, query, limit or 5, opts or {})
     if ok and list then
       for _, t in ipairs(list) do
         t.raw_id = t.id
@@ -335,6 +342,21 @@ function M.search_online(query, limit)
   end
   if #out == 0 and #errs > 0 then return nil, table.concat(errs, "; ") end
   return out
+end
+
+-- Optional plugin hook: parts(raw_id) -> multi-part / collection entries (namespaced ids).
+function M.parts(name, raw)
+  local p = M.get(name)
+  if not p or type(p.parts) ~= "function" then return nil end
+  local ok, list = pcall(p.parts, raw)
+  if not ok or type(list) ~= "table" then return nil end
+  for _, t in ipairs(list) do
+    t.raw_id = t.id
+    t.id = name .. ":" .. tostring(t.id)
+    t.plugin = name
+    t.matched = "online"
+  end
+  return list
 end
 
 -- Resolves an upstream url + headers for "<plugin>:<id>" (or plugin, id).

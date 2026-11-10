@@ -2,7 +2,7 @@
 local M = {
   name = "bili",
   type = "online",
-  version = "1.1",
+  version = "1.2",
   description = "哔哩哔哩视频音频（在线搜索与播放）",
 }
 
@@ -95,21 +95,61 @@ local function seconds(d)
   return total
 end
 
-function M.search(query, limit)
+-- opts.kind: "song"（默认）只要 10 分钟以内（opts.long 时不限）、优先音乐分区；"audio" 不做时长/分区过滤。
+function M.search(query, limit, opts)
   ensure_cookie()
-  local d, err = get("/x/web-interface/search/type?search_type=video&page=1&page_size="
-    .. (tonumber(cfg.page_size) or 20) .. "&keyword=" .. urlencode(query))
+  local kind = (opts and opts.kind) or "song"
+  local base = "/x/web-interface/search/type?search_type=video&page=1&page_size="
+    .. (tonumber(cfg.page_size) or 20) .. "&keyword=" .. urlencode(query)
+  local d, err
+  if kind == "song" then
+    -- opts.long: 找分 P / 合集时不限时长。
+    local dur = (opts and opts.long) and "" or "&duration=1"
+    d, err = get(base .. dur .. "&tids=3")
+    if d and #(d.result or {}) == 0 then d, err = get(base .. dur) end
+  else
+    d, err = get(base)
+  end
   if not d then return nil, err end
   local out = {}
   for _, v in ipairs(d.result or {}) do
     if v.bvid and v.bvid ~= "" then
-      out[#out + 1] = { id = v.bvid, title = clean(v.title), artist = clean(v.author), album = "", duration = seconds(v.duration) }
+      out[#out + 1] = { id = v.bvid, title = clean(v.title), artist = clean(v.author), album = "",
+                        duration = seconds(v.duration), play = tonumber(v.play) or 0,
+                        pages = tonumber(v.pages or v.videos) }
       if #out >= (limit or 5) then break end
     end
   end
   return out
 end
 
+-- 分 P 与合集：返回 { {id="BV:cid", title, artist, duration}, ... }（含 view 自身信息）。
+function M.parts(bvid)
+  ensure_cookie()
+  local v, err = get("/x/web-interface/view?bvid=" .. urlencode(bvid))
+  if not v then return nil, err end
+  local up = clean(v.owner and v.owner.name or "")
+  local out = {}
+  local pages = v.pages or {}
+  if #pages > 1 then
+    for i, pg in ipairs(pages) do
+      out[#out + 1] = { id = i == 1 and bvid or (bvid .. ":" .. tostring(pg.cid)), title = clean(pg.part),
+                        artist = up, album = clean(v.title), duration = seconds(pg.duration), part = i }
+    end
+  end
+  local season = v.ugc_season
+  for _, sec in ipairs(season and season.sections or {}) do
+    for _, ep in ipairs(sec.episodes or {}) do
+      local b = ep.bvid or bvid
+      local dur = ep.arc and ep.arc.duration or (ep.page and ep.page.duration) or ep.duration
+      if ep.cid then
+        out[#out + 1] = { id = b .. ":" .. tostring(ep.cid), title = clean(ep.title), artist = up,
+                          album = clean(season.title), duration = seconds(dur), episode = true }
+      end
+    end
+  end
+  return out
+end
 -- Picks a plain AAC track from dash.audio: highest id <= preference, else
 -- the lowest available. dash.dolby / dash.flac are deliberately ignored.
 function M.pick_audio(list, pref)
@@ -129,11 +169,17 @@ function M.pick_audio(list, pref)
   return best or lowest
 end
 
-function M.stream(bvid)
+-- id: "BVxxx"（第一 P）或 "BVxxx:<cid>"（指定分 P / 合集单集）。
+function M.stream(id)
   ensure_cookie()
-  local v, err = get("/x/web-interface/view?bvid=" .. urlencode(bvid))
-  if not v then return nil, err end
-  local cid = v.cid or (v.pages and v.pages[1] and v.pages[1].cid)
+  local bvid, cid = tostring(id):match("^([^:]+):(%d+)$")
+  bvid = bvid or tostring(id)
+  cid = tonumber(cid)
+  if not cid then
+    local v, err = get("/x/web-interface/view?bvid=" .. urlencode(bvid))
+    if not v then return nil, err end
+    cid = v.cid or (v.pages and v.pages[1] and v.pages[1].cid)
+  end
   if not cid then return nil, "no cid" end
   local p, perr = get(string.format("/x/player/playurl?bvid=%s&cid=%d&fnval=16", urlencode(bvid), cid))
   if not p then return nil, perr end

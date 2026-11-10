@@ -22,13 +22,158 @@ local function good(s)
   return s.score >= 0.6 or s.matched == "artist" or s.matched == "server"
 end
 
+-- Decision notes: process log + conversation info step (when the web module is loaded).
+function M.note(msg)
+  mico.log("[online]", msg)
+  local web = package.loaded["web"]
+  if web and web.step then pcall(web.step, { kind = "info", name = "online", result = msg }) end
+end
+
+local function lower(s) return tostring(s or ""):lower() end
+
+local function keyword_hit(title, list)
+  local t = lower(title)
+  for kw in (tostring(list or ""):gsub("，", ",")):gmatch("[^,]+") do
+    kw = kw:gsub("^%s+", ""):gsub("%s+$", "")
+    if kw ~= "" and t:find(lower(kw), 1, true) then return kw end
+  end
+end
+
+-- Ranks items by fuzzy match (temp index) then play count. Returns copies with .score.
+local function rank(items, query, min_score)
+  if #items == 0 then return {} end
+  local ix = "online_tmp"
+  mico.index_clear(ix)
+  local tagged = {}
+  for i, t in ipairs(items) do
+    tagged[i] = { title = t.title, artist = t.artist or "", album = t.album or "", n = i }
+  end
+  mico.index_add(ix, tagged)
+  local scores = {}
+  for _, h in ipairs(mico.index_search(ix, query, { limit = #items, min_score = 0 })) do
+    scores[h.item.n] = h.score
+  end
+  mico.index_clear(ix)
+  local out = {}
+  for i, t in ipairs(items) do
+    local sc = scores[i] or 0
+    if not min_score or sc >= min_score then
+      t.score = math.floor(sc * 100 + 0.5) / 100
+      out[#out + 1] = t
+    end
+  end
+  table.sort(out, function(a, b)
+    if a.score ~= b.score then return a.score > b.score end
+    return (tonumber(a.play) or 0) > (tonumber(b.play) or 0)
+  end)
+  return out
+end
+
+-- Online search with song/audio filtering.
+-- opts.kind = "song" (default) | "audio"; opts.artist = true: artist-only (pick one random single).
+function M.online_search(query, limit, opts)
+  opts = opts or {}
+  local kind = opts.kind == "audio" and "audio" or "song"
+  local oc = config.current.online or {}
+  if kind == "audio" then
+    local list, err = plugins.search_online(query, 20, { kind = "audio" })
+    if not list then return nil, err end
+    local maxs = tonumber(oc.audio_max_s) or 14400
+    local keep = {}
+    for _, t in ipairs(list) do
+      local d = tonumber(t.duration) or 0
+      if d == 0 or (d >= 60 and d <= maxs) then t.kind = "audio"; keep[#keep + 1] = t end
+    end
+    local out = rank(keep, query)
+    M.note(string.format("在线搜索（非歌曲）%s：%d 条结果，%d 条时长符合（60–%d 秒）%s", query, #list, #keep, maxs,
+      out[1] and ("，选 " .. out[1].title .. " " .. (out[1].duration or 0) .. "s") or ""))
+    while #out > limit do table.remove(out) end
+    return out
+  end
+  local mins, maxs = tonumber(oc.song_min_s) or 90, tonumber(oc.song_max_s) or 480
+  local skip = oc.skip_keywords or ""
+  local sq = opts.artist and (query .. " 歌曲") or query
+  local list, err = plugins.search_online(sq, 20, { kind = "song" })
+  if not list then return nil, err end
+  local singles, multi, n_kw, n_dur = {}, {}, 0, 0
+  for _, t in ipairs(list) do
+    local d = tonumber(t.duration) or 0
+    local kw = keyword_hit(t.title, skip)
+    if d > maxs or (t.pages and t.pages > 1) or (kw and d > mins) then multi[#multi + 1] = t end
+    if kw then n_kw = n_kw + 1
+    elseif d < mins or d > maxs then n_dur = n_dur + 1
+    else t.kind = "song"; singles[#singles + 1] = t end
+  end
+  local summary = string.format("在线搜索歌曲 %s：%d 条结果，关键词排除 %d，时长不符（%d–%d 秒）%d，单曲 %d",
+    sq, #list, n_kw, mins, maxs, n_dur, #singles)
+  if opts.artist then
+    local cand = {}
+    for _, t in ipairs(singles) do
+      local r = rank({ { title = t.title .. " " .. (t.artist or ""), artist = "" } }, query)
+      if lower(t.title):find(lower(query), 1, true) or lower(t.artist):find(lower(query), 1, true)
+          or (r[1] and r[1].score >= 0.6) then
+        cand[#cand + 1] = t
+      end
+    end
+    if #cand == 0 then M.note(summary .. "；没有提到歌手 " .. query .. " 的单曲"); return {} end
+    local pick = cand[math.random(#cand)]
+    pick.score = 1
+    M.note(summary .. string.format("；歌手 %s 符合 %d 首，随机选 %s（%ds）", query, #cand, pick.title, pick.duration or 0))
+    return { pick }
+  end
+  local out = rank(singles, query)
+  if #out > 0 then
+    M.note(summary .. string.format("；选 %s（%ds，匹配 %.2f）", out[1].title, out[1].duration or 0, out[1].score))
+    while #out > limit do table.remove(out) end
+    return out
+  end
+  -- Fallback: a matching part inside multi-part videos / collections. The song
+  -- search only returns short videos, so look for long ones once more.
+  local long = plugins.search_online(sq, 20, { kind = "song", long = true }) or {}
+  local seen = {}
+  for _, t in ipairs(multi) do seen[t.id] = true end
+  for _, t in ipairs(long) do
+    if not seen[t.id] and ((tonumber(t.duration) or 0) > maxs or (t.pages and t.pages > 1)) then
+      seen[t.id] = true
+      multi[#multi + 1] = t
+    end
+  end
+  multi = rank(multi, query)
+  for i = 1, math.min(3, #multi) do
+    local v = multi[i]
+    local parts = plugins.parts(v.plugin, v.raw_id) or {}
+    local ok = {}
+    for _, pt in ipairs(parts) do
+      local d = tonumber(pt.duration) or 0
+      if d >= mins and d <= maxs and not keyword_hit(pt.title, skip) then
+        pt.album = ""  -- match on the part title only
+        ok[#ok + 1] = pt
+      end
+    end
+    local hits = rank(ok, query, 0.6)
+    if hits[1] then
+      local h = hits[1]
+      h.kind = "song"
+      h.album = v.title
+      M.note(summary .. string.format("；从 %s 的 %d 个分P/合集条目中选 %s（%ds，匹配 %.2f，id %s）",
+        v.title, #parts, h.title, h.duration or 0, h.score, h.id))
+      return { h }
+    end
+  end
+  M.note(summary .. string.format("；分P/合集 %d 个也没有符合的，放弃", math.min(3, #multi)))
+  return {}
+end
+
 -- Fuzzy search over the local index; falls back to the 飞牛 server search,
 -- then to online plugins when nothing local is good (score < 0.6).
 -- opts.online: true = only online, false = never online.
+-- opts.kind: "song" (default) | "audio" (podcast etc.: online only, no song filters).
+-- opts.artist: artist-only online request (one random single).
 function M.search_music(query, limit, opts)
   limit = limit or 5
   opts = opts or {}
   local out = {}
+  if opts.kind == "audio" then opts.online = true end
   if opts.online ~= true then
     local ok, err = M.ensure_index()
     if not ok then mico.log("index:", err) end
@@ -65,7 +210,7 @@ function M.search_music(query, limit, opts)
     end
   end
   if opts.online ~= false and (not out[1] or not good(out[1])) then
-    local list, err = plugins.search_online(query, limit)
+    local list, err = M.online_search(query, limit, opts)
     if list then
       for _, s in ipairs(list) do
         out[#out + 1] = s
@@ -184,19 +329,20 @@ function M.register(opts)
 
   mico.tool({
     name = "music_search",
-    description = "模糊搜索歌曲（容忍同音字/错别字）。默认先搜本地曲库，没有好结果时自动在线搜索；online=true 只在线搜索（用户明确要求在线/B站时）。返回的 id 传给 music_play。",
+    description = "模糊搜索歌曲（容忍同音字/错别字）。默认先搜本地曲库，没有好结果时自动在线搜索；online=true 只在线搜索（用户明确要求在线/B站时）。播客、访谈、讲座、相声、评书、有声书、节目、脱口秀、新闻等非歌曲内容传 kind=\"audio\"（只在线搜索，不限歌曲时长）。返回的 id 传给 music_play。",
     parameters = {
       type = "object",
       properties = {
         query = { type = "string", description = "歌名、歌手或两者组合，去掉“播放”“我想听”等词" },
         limit = { type = "number", description = "返回数量，默认 5" },
         online = { type = "boolean", description = "true 只在线搜索" },
+        kind = { type = "string", enum = { "song", "audio" }, description = "song（默认，歌曲）或 audio（播客/访谈/讲座/相声/有声书等长音频）" },
       },
       required = { "query" },
     },
     handler = function(args)
       local list, err = M.search_music(args.query, tonumber(args.limit) or 5,
-        args.online == true and { online = true } or nil)
+        { online = args.online == true or nil, kind = args.kind == "audio" and "audio" or nil })
       if not list then return { error = err } end
       return { results = list }
     end,

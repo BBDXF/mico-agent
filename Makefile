@@ -10,7 +10,7 @@ BUILD    ?= build
 OPT      ?= -Os
 VERSION  ?= $(shell git describe --tags 2>/dev/null | sed 's/^v//' || true)
 ifeq ($(strip $(VERSION)),)
-VERSION  := 0.2.0
+VERSION  := 0.2.1
 endif
 MICO_VERSION ?= $(VERSION)
 ARCH     ?= $(shell $(CC) -dumpmachine 2>/dev/null | cut -d- -f1)

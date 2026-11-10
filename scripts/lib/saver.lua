@@ -82,6 +82,7 @@ end
 
 -- Track-only checks (before naming): duration, keywords. nil = ok, else reason.
 function M.check_track(track)
+  if track.kind == "audio" then return "非歌曲内容不保存" end
   local c = cfg()
   local d = tonumber(track.duration)
   if d and d > 0 then

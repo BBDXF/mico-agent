@@ -46,6 +46,39 @@ SCRIPTS = {
     "青花": [("music_search", {"query": "青花词"}), ("music_play", "@first_id")],
     "命令": [("run_shell", {"command": "echo hello-shell"})],
     "请求": [("http_request", {"url": "@ping"})],
+    "罗翔的播客": [("music_search", {"query": "罗翔的访谈", "kind": "audio", "online": True}),
+                   ("music_play", "@first_id")],
+}
+
+
+def sr(bvid, title, duration, author="UP主", play=0):
+    return {"bvid": bvid, "title": title, "author": author, "duration": duration, "play": play}
+
+
+# Online search scenarios by exact keyword (default: BV1test / BV2test).
+BILI_SEARCH = {
+    "七里香精选测试": [sr("BVc1", "周杰伦 七里香 合集", "3:30"), sr("BVc2", "七里香 十小时循环", "600:00"),
+                 sr("BVc3", "七里香精选测试 原版", "4:20", play=5)],
+    "晴天": [sr("BVm1", "周杰伦演唱会全集", "95:00")],
+    "稻香": [sr("BVs1", "周杰伦 全部歌曲", "50:00")],
+    "无单曲": [sr("BVn1", "无单曲 现场", "70:00"), sr("BVn2", "无单曲 片段", "0:20")],
+    "阿杜 歌曲": [sr("BVa1", "阿杜 他一定很爱你", "4:10"), sr("BVa2", "阿杜 演唱会合集", "4:00"),
+              sr("BVa3", "别人的歌", "3:00", author="X")],
+    "夜曲分P测试": [sr("BVh1", "周杰伦 经典合集", "60:00")],
+    "罗翔的访谈": [sr("BVr1", "罗翔 访谈 全集", "2:10:00", play=9), sr("BVr2", "罗翔 短片", "0:30")],
+}
+BILI_VIEW = {
+    "BVm1": {"cid": 100, "title": "周杰伦演唱会全集", "owner": {"name": "UP主"}, "pages": [
+        {"cid": 101, "part": "开场", "duration": 200}, {"cid": 102, "part": "晴天", "duration": 270},
+        {"cid": 103, "part": "稻香 live", "duration": 230}]},
+    "BVs1": {"cid": 200, "title": "周杰伦 全部歌曲", "owner": {"name": "UP主"}, "pages": [{"cid": 200, "part": "p1", "duration": 3000}],
+             "ugc_season": {"title": "周杰伦歌曲", "sections": [{"episodes": [
+                 {"title": "七里香", "bvid": "BVe1", "cid": 301, "arc": {"duration": 299}},
+                 {"title": "稻香", "bvid": "BVe2", "cid": 302, "arc": {"duration": 223}}]}]}},
+    "BVh1": {"cid": 500, "title": "周杰伦 经典合集", "owner": {"name": "UP主"}, "pages": [
+        {"cid": 501, "part": "开场", "duration": 200}, {"cid": 502, "part": "夜曲分P测试", "duration": 226}]},
+    "BVn1": {"cid": 400, "title": "无单曲 现场", "pages": [
+        {"cid": 401, "part": "别的", "duration": 200}, {"cid": 402, "part": "无单曲", "duration": 2000}]},
 }
 
 
@@ -53,6 +86,9 @@ BILI_REQUESTS = []
 REMOTE_PLUGIN = ("return {name='remote', type='online', version='1', description='r',"
                  " search=function() return {} end, stream=function(id) return 'http://x/'..id end}")
 AUDIO = bytes(range(256)) * 12000  # ~3 MB
+# Distinct per-part audio so a save of the wrong part (e.g. page 1) is detectable.
+AUDIO_BY_PATH = {"/audio/BVm1-102": bytes(range(255, -1, -1)) * 3000,
+                 "/audio/BVh1-502": b"part-502-" * 50000}
 
 
 # Knobs for the mock online source (边播边存 tests).
@@ -215,11 +251,15 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/x/web-interface/search/type":
             if "buvid3=BUVID-TEST" not in (self.headers.get("Cookie") or ""):
                 return self.send_json({"code": -412, "message": "no cookie"}, 412)
+            if q.get("keyword") in BILI_SEARCH:
+                return self.send_json({"code": 0, "data": {"result": BILI_SEARCH[q["keyword"]]}})
             return self.send_json({"code": 0, "data": {"result": [
                 {"bvid": "BV1test", "title": MOCK["title"] or '<em class="keyword">测试</em>视频 &amp; 歌', "author": "UP主",
                  "duration": MOCK["duration"]},
                 {"bvid": "BV2test", "title": "另一个", "author": "B", "duration": "1:00"}]}})
         if u.path == "/x/web-interface/view":
+            if q.get("bvid") in BILI_VIEW:
+                return self.send_json({"code": 0, "data": BILI_VIEW[q["bvid"]]})
             return self.send_json({"code": 0, "data": {"cid": 42 if q.get("bvid") == "BV1test" else 7}})
         if u.path == "/x/player/playurl":
             base = "http://127.0.0.1:%d/audio/" % self.server.server_port
@@ -229,14 +269,15 @@ class Handler(BaseHTTPRequestHandler):
                 "dolby": {"audio": [{"id": 30250, "codecs": "ec-3", "bandwidth": 99999, "baseUrl": base + "dolby"}]},
                 "flac": {"audio": {"id": 30251, "codecs": "fLaC", "bandwidth": 99999, "baseUrl": base + "flac"}}}}})
         if u.path.startswith("/audio/"):
-            data, status = AUDIO, 200
+            full = AUDIO_BY_PATH.get(u.path, AUDIO)
+            data, status = full, 200
             rng = self.headers.get("Range")
             headers = {"Content-Type": "audio/mp4", "Accept-Ranges": "bytes", "X-Secret": "no"}
             if rng:
                 a, b = rng.split("=")[1].split("-")
-                a, b = int(a), int(b) if b else len(AUDIO) - 1
-                data, status = AUDIO[a:b + 1], 206
-                headers["Content-Range"] = "bytes %d-%d/%d" % (a, b, len(AUDIO))
+                a, b = int(a), int(b) if b else len(full) - 1
+                data, status = full[a:b + 1], 206
+                headers["Content-Range"] = "bytes %d-%d/%d" % (a, b, len(full))
             self.send_response(status)
             for k, v in headers.items():
                 self.send_header(k, v)
@@ -819,9 +860,9 @@ def save_tests(js, call):
     MOCK["title"] = None
     if job["status"] != "skipped" or "关键词" not in job.get("reason", "") or DAV["log"]:
         fail("keyword skip %r" % job)
-    MOCK["duration"] = "0:30"
+    setcfg(max_duration_s=120)
     job = play_and_wait(7)
-    MOCK["duration"] = "3:05"
+    setcfg(max_duration_s=600)
     if job["status"] != "skipped" or "时长" not in job.get("reason", "") or DAV["log"]:
         fail("duration skip %r" % job)
 
@@ -849,6 +890,15 @@ def save_tests(js, call):
             break
         time.sleep(0.1)
     naming_tests(js, jobs, setcfg, folder)
+    part_save_tests(js, jobs, setcfg, folder)
+    # kind=audio (fast path "访谈"): long item plays but is never saved.
+    top = jobs()[0]["id"]
+    st, j = js("POST", "/api/ask", {"text": "播放罗翔的访谈"})
+    if j.get("reply") != "为你播放罗翔的访谈":
+        fail("audio fast path reply %r" % j)
+    jl = jobs()
+    if jl[0]["id"] <= top or jl[0]["status"] != "skipped" or jl[0].get("reason") != "非歌曲内容不保存":
+        fail("audio saved %r" % jl[:1])
     setcfg(enabled=False, queue_size=3)
     dav.shutdown()
 
@@ -923,6 +973,100 @@ def naming_tests(js, jobs, setcfg, folder):
         fail("no split %r %r %r" % (job, notes, list(DAV["files"])))
     MOCK["title"] = None
     setcfg(require_match=True)
+
+
+def part_save_tests(js, jobs, setcfg, folder):
+    """边播边存 of a part picked from a multi-part video, and artist-only requests."""
+    def play(text):
+        top = jobs()[0]["id"] if jobs() else 0
+        BILI_REQUESTS.clear()
+        js("POST", "/api/ask", {"text": text})
+        for _ in range(150):
+            jl = jobs()
+            if jl and jl[0]["id"] > top and jl[0]["status"] not in ("queued", "running"):
+                return jl[0]
+            time.sleep(0.1)
+        fail("part save job did not finish %r" % jobs()[:2])
+
+    def cids(bvid):
+        return [r[1].get("cid") for r in BILI_REQUESTS if r[0] == "/x/player/playurl" and r[1].get("bvid") == bvid]
+
+    def audio_paths():
+        return [r[0] for r in BILI_REQUESTS if r[0].startswith("/audio/")]
+
+    setcfg(normalize=True, require_artist=True, require_match=True)
+    # Part 2 of "周杰伦演唱会全集" (no single qualifies).
+    MOCK["norm"] = '{"artist": "周杰伦", "title": "晴天", "confident": true}'
+    job = play("在线播放晴天")
+    f = folder + "周杰伦 - 晴天.m4a"
+    if job["status"] != "done" or DAV["files"].get(f) != AUDIO_BY_PATH["/audio/BVm1-102"] \
+            or job["bytes"] != len(AUDIO_BY_PATH["/audio/BVm1-102"]):
+        fail("part save %r %r" % (job, list(DAV["files"])))
+    if not cids("BVm1") or set(cids("BVm1")) != {"102"} or "/audio/BVm1-100" in audio_paths() \
+            or "/audio/BVm1-101" in audio_paths():
+        fail("part save used wrong cid %r %r" % (cids("BVm1"), audio_paths()))
+
+    # Parent title has "合集", the part title is clean -> still saved.
+    MOCK["norm"] = '{"artist": "周杰伦", "title": "夜曲", "confident": true}'
+    job = play("在线播放夜曲分P测试")
+    f = folder + "周杰伦 - 夜曲.m4a"
+    if job["status"] != "done" or DAV["files"].get(f) != AUDIO_BY_PATH["/audio/BVh1-502"]:
+        fail("collection part save %r %r" % (job, list(DAV["files"])))
+    if set(cids("BVh1")) != {"502"}:
+        fail("collection part wrong cid %r" % cids("BVh1"))
+
+    # Artist-only online request -> named via the LLM.
+    MOCK["norm"] = '{"artist": "阿杜", "title": "他一定很爱你", "confident": true}'
+    n = len(COMPLETE_REQUESTS)
+    job = play("在线播放阿杜的歌")
+    f = folder + "阿杜 - 他一定很爱你.m4a"
+    if job["status"] != "done" or DAV["files"].get(f) != AUDIO or len(COMPLETE_REQUESTS) <= n:
+        fail("artist-only save %r %r" % (job, list(DAV["files"])))
+    MOCK["norm"] = "error"
+
+
+def online_filter_tests(binary, script, env):
+    """Online song filtering: duration/keywords, multi-part, collections, artist-only, audio."""
+    def play(text):
+        LLM_REQUESTS.clear()
+        BILI_REQUESTS.clear()
+        return run_once(binary, script, env, text)
+
+    def searches():
+        return [r[1] for r in BILI_REQUESTS if r[0] == "/x/web-interface/search/type"]
+
+    out = play("在线播放七里香精选测试")
+    if "/audio/BVc3-7" not in out or LLM_REQUESTS:
+        fail("compilation not excluded", out)
+    s = searches()
+    if not s or s[0].get("duration") != "1" or s[0].get("tids") != "3":
+        fail("song search filters %r" % s)
+    out = play("在线播放晴天")
+    if "/audio/BVm1-102" not in out or "playurl" in out and "cid=102" not in str(BILI_REQUESTS):
+        fail("multi-part pick", out)
+    if not any(r[0] == "/x/player/playurl" and r[1].get("cid") == "102" for r in BILI_REQUESTS):
+        fail("stream did not use part cid %r" % BILI_REQUESTS)
+    out = play("在线播放稻香")
+    if "/audio/BVe2-302" not in out:
+        fail("ugc_season episode pick", out)
+    out = play("在线播放无单曲")
+    if "/audio/BVn" in out or not LLM_REQUESTS:
+        fail("nothing qualifies should go to LLM", out)
+    out = play("在线播放阿杜的歌")
+    if "/audio/BVa1-7" not in out or LLM_REQUESTS or searches()[0].get("keyword") != "阿杜 歌曲":
+        fail("artist-only online", out)
+    out = play("播放罗翔的访谈")
+    if "/audio/BVr1-7" not in out or LLM_REQUESTS or "为你播放罗翔的访谈" not in out:
+        fail("audio fast path", out)
+    if any("duration" in q or "tids" in q for q in searches()):
+        fail("audio search must not filter %r" % searches())
+    out = play("找个罗翔的播客")
+    if "[tool] music_search" not in out or "/audio/BVr1-7" not in out:
+        fail("music_search kind=audio", out)
+    params = LLM_REQUESTS[0]["tools"]
+    ms = next(t for t in params if t["function"]["name"] == "music_search")
+    if "kind" not in ms["function"]["parameters"]["properties"]:
+        fail("music_search kind param missing")
 
 
 def main():
@@ -1011,6 +1155,8 @@ def main():
     out = run_once(binary, script, env, "播放离骚吟")
     if "guid=g7" in out:
         fail("ape track played", out)
+
+    online_filter_tests(binary, script, env)
 
     # 5c. Shell can be disabled from the config file.
     with open(cfg_path) as f:

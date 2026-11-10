@@ -42,6 +42,28 @@
     "max_mb": 30,
     "buffer_kb": 1024
   },
+  "save": {
+    "enabled": false,
+    "webdav_url": "",
+    "username": "",
+    "password": "",
+    "filename": "{artist} - {title}.{ext}",
+    "min_duration_s": 60,
+    "max_duration_s": 600,
+    "max_size_mb": 200,
+    "queue_size": 3,
+    "skip_keywords": "合集,串烧,翻唱,cover,伴奏,纯音乐,DJ,remix,live,现场,教学,reaction",
+    "require_match": true,
+    "normalize": true,
+    "normalize_timeout_ms": 8000,
+    "require_artist": true
+  },
+  "log": {
+    "file": "/tmp/mico-agent.log",
+    "max_kb": 512,
+    "keep": 1,
+    "stderr": true
+  },
   "instruction_log": "/tmp/mico_aivs_lab/instruction.log",
   "dry_run": false,
   "poll_ms": 50

@@ -34,10 +34,14 @@ local tools = require("tools")
 local indexer = require("indexer")
 
 -- Called ~once per second by C++ in follow mode: startup + interval index sync.
-function on_tick() indexer.tick() end
+local saver = require("saver")
+function on_tick() indexer.tick(); saver.poll() end
 
 local function apply(c)
   _G.config = c
+  local lg = c.log or {}
+  mico.log_config({ file = lg.file or "", max_kb = tonumber(lg.max_kb) or 512, keep = tonumber(lg.keep) or 1,
+                    stderr = lg.stderr ~= false })
   speaker.dry_run = c.dry_run == true
   mico.configure({
     llm = {
@@ -157,6 +161,10 @@ local function try_fast_play(text)
   -- Online video titles are noisy ("【Hi-Res】…"): announce what the user asked for.
   pick.say = pick.matched == "online" and q or ((pick.artist ~= "" and (pick.artist .. "的") or "") .. pick.title)
   speaker.speak("为你播放" .. pick.say)
+  if pick.matched == "online" then
+    -- 边播边存 naming input: the saver normalizes it (LLM / library / rules).
+    pick.save = { query = q, utterance = text }
+  end
   local ok, err = tools.play_track(pick)
   if not ok then mico.log("play failed:", err) end
   return true, pick, err
@@ -186,6 +194,7 @@ end
 
 -- Called by C++ for every web request.
 web.ask = function(text)
+  mico.log("web:", web.truncate(text, 300))
   web.begin_turn("web", text)
   local fast, pick, perr = try_fast_play(text)
   if fast then

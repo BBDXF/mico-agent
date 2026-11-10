@@ -4,7 +4,7 @@ local speaker = require("speaker")
 local plugins = require("plugins")
 local config = require("config")
 
-local M = {}
+local M = { online_seen = {}, online_seen_n = 0 }  -- recent online results by id (title/duration)
 
 local function truncate(s, n)
   if #s <= n then return s end
@@ -67,7 +67,12 @@ function M.search_music(query, limit, opts)
   if opts.online ~= false and (not out[1] or not good(out[1])) then
     local list, err = plugins.search_online(query, limit)
     if list then
-      for _, s in ipairs(list) do out[#out + 1] = s end
+      for _, s in ipairs(list) do
+        out[#out + 1] = s
+        M.online_seen[s.id] = s
+        M.online_seen_n = M.online_seen_n + 1
+      end
+      if M.online_seen_n > 200 then M.online_seen, M.online_seen_n = {}, 0 end
     elseif opts.online then
       return nil, err
     end
@@ -106,6 +111,11 @@ function M.play_track(track)
   track.plugin = name
   M.now_playing = track
   M.now_playing_since = os.time()
+  local pt = p.type
+  if pt == "online" then
+    local ok2, e2 = pcall(function() require("saver").maybe_save(track, track.save) end)
+    if not ok2 then mico.log("save:", e2) end
+  end
   return true
 end
 
@@ -200,6 +210,8 @@ function M.register(opts)
       properties = {
         id = { type = "string", description = "歌曲 id" },
         query = { type = "string", description = "没有 id 时用于搜索" },
+        title = { type = "string", description = "可选：用户要听的歌名（干净的歌名，用于在线歌曲保存命名）" },
+        artist = { type = "string", description = "可选：用户说的歌手名" },
       },
     },
     handler = function(args)
@@ -207,6 +219,8 @@ function M.register(opts)
       if args.id and args.id ~= "" then
         local name, raw = plugins.split_id(args.id)
         track = { id = name .. ":" .. raw }
+        local seen = M.online_seen[track.id]
+        if seen then track = {}; for k, v in pairs(seen) do track[k] = v end end
         for _, h in ipairs(mico.index_search("music", args.query or "", { limit = 1 })) do
           if h.item.id == track.id then track = h.item end
         end
@@ -216,6 +230,7 @@ function M.register(opts)
         track = list[1]
       end
       if not track then return { error = "没有找到歌曲" } end
+      track.save = { title = args.title, artist = args.artist, query = args.query }
       local ok, err = M.play_track(track)
       if not ok then return { error = err } end
       return { playing = track }

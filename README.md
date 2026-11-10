@@ -32,6 +32,7 @@
 - **内置工具**：`run_shell`、`http_request`、`music_search`、`music_play`、`music_stop`、`music_now_playing`；自定义工具放在 `scripts/tools/`。
 - **音乐插件**：`fnos`（本地源，飞牛音乐曲库，自动跳过音箱解不了的 APE/WMA/DSD/ALAC）、在线音乐源插件（获取在线音乐，只选普通 AAC 音轨）。
 - **曲库索引**：启动时同步、定时同步、搜不到时自动补同步，也可在网页上手动同步。
+- **边播边存**（默认关闭）：播放在线音乐源的歌曲时，同时经 WebDAV 保存到 NAS（按时长 / 关键词过滤，自动去重；保存前由大模型规范歌手/歌名并修正同音字，歌手按本地曲库写法校正，非原曲或无法确定歌手时不保存），之后本地曲库即可直接播放。
 - **Web 控制台**（默认 `:8080`）：状态 / 对话 / 配置 / 工具 / 插件，可设访问令牌。
 
 ## 部署
@@ -55,8 +56,11 @@ cd /data && tar xzf mico-agent-*-armhf.tar.gz && mv mico-agent-*/ mico-agent && 
 cp config.example.json config.json
 vi config.json                      # 填 llm.api_key，可改 model / base_url
 vi scripts/plugins/fnos.lua         # 顶部 M.config 填 NAS 地址、账号、密码（也可稍后在网页里改）
-./mico-agent -c /data/mico-agent/config.json
+./mico-agent -c /data/mico-agent/config.json >/dev/null 2>&1 &
 ```
+
+运行日志写到 `/tmp/mico-agent.log`（内存盘，按 `log.max_kb` 自动轮转，有上限），可通过 `GET /api/logs?lines=200` 查看。
+不要把输出重定向到 `/data` 下的文件，否则会无限增长占满空间。
 
 打开 `http://<音箱IP>:8080`，在网页里继续配置。确认可用后，把启动命令加入开机脚本（例如 `/data/` 下的自启动脚本，按你的 root 方案而定），建议设置 `web.token`。
 
@@ -85,6 +89,26 @@ make CROSS=arm-linux-gnueabihf- dist  # 需要 GCC 6 / glibc ≤ 2.25 的交叉�
 
 - 原厂播放器基于精简版 FFmpeg：支持 MP3 / FLAC / AAC(m4a) / OGG / Opus / WAV，不支持 APE、WMA、DSD、ALAC、杜比音轨。
 - 在线音乐源的音频格式（分段 m4a）的真机播放、飞牛是否强制 authx 签名，仍待更多设备验证。
+- 边播边存：fnOS WebDAV 是否接受分块上传（源未给出文件大小时）、保存的 m4a 能否被飞牛音乐识别，待真机验证。
+- 边播边存的歌名规范化在主线程同步调用大模型（默认超时 8 秒），期间新的语音指令会稍有延迟。
+
+## 更新记录
+
+### v0.2.0
+
+- **边播边存**（默认关闭）：在线音乐源的歌曲边播放边经 WebDAV 流式保存到 NAS，不占音箱存储，支持大文件。
+  - 先上传为 `.part`，校验大小后重命名，失败自动清理；同名文件跳过。
+  - 可配置时长范围、文件大小上限、过滤关键词、排队数量（`save.queue_size`）。
+  - 保存前由大模型规范歌手 / 歌名（修正同音错字、去掉 MV / Live / 无损等修饰，判断是否原曲），歌手按本地曲库写法校正；不确定或缺歌手时不保存，大模型不可用时回退规则命名。
+  - 保存成功后自动重新同步曲库，之后同一首歌直接走本地。
+  - 状态页显示最近保存记录与进度，配置页可测试 WebDAV 连接，`[save]` 日志记录每一步。
+- **日志有上限**：写入 `/tmp/mico-agent.log` 并按大小轮转（默认 512 KB × 2 份），新增 `GET /api/logs`；终端输出不会再阻塞程序。
+- 新增 Lua `mico.complete`（不带工具、不进历史的一次性大模型调用）。
+- 修复：过滤关键词按中文逗号拆分时误伤中文歌名。
+
+### v0.1.0
+
+- 首个版本：C++14 + Lua 5.1 内核、拼音模糊搜索与点歌快路径、飞牛本地源与在线音乐源插件、流代理播放、Web 控制台（状态 / 对话 / 配置 / 工具 / 插件）、曲库自动同步、armhf 交叉编译与 CI 发布。
 
 ## 文档
 

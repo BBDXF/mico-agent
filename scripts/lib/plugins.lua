@@ -303,6 +303,16 @@ function M.sync_index(index_name)
   end
   mico.index_clear(index_name)
   mico.index_add(index_name, all)
+  -- Distinct artists (for 边播边存 artist spelling correction).
+  local seen, artists = {}, {}
+  for _, t in ipairs(all) do
+    for a in (tostring(t.artist):gsub("、", "/"):gsub("，", "/"):gsub("；", "/")):gmatch("[^/,;&]+") do
+      a = a:gsub("^%s+", ""):gsub("%s+$", "")
+      if a ~= "" and not seen[a] then seen[a] = true; artists[#artists + 1] = { title = a, name = a } end
+    end
+  end
+  mico.index_clear(index_name .. "_artists")
+  mico.index_add(index_name .. "_artists", artists)
   return #all, (#errs > 0) and table.concat(errs, "; ") or nil
 end
 

@@ -8,6 +8,7 @@
 
 #include "instruction.h"
 #include "runtime.h"
+#include "saver.h"
 #include "tail.h"
 
 extern "C" {
@@ -43,6 +44,24 @@ static void test_parse_recognition() {
     std::string bad_types =
         R"({"header":{"name":1,"namespace":"SpeechRecognizer"},"payload":{"results":[{"text":"x"}]}})";
     CHECK(!mico::parse_recognition(bad_types, r));
+}
+
+static void test_ring_buffer() {
+    mico::RingBuffer r(8);
+    char out[16];
+    CHECK(r.write("abcdef", 6) == 6);
+    CHECK(r.read(out, 4) == 4 && std::string(out, 4) == "abcd");
+    CHECK(r.write("123456789", 9) == 6);  // wraps, capped at free space
+    CHECK(r.size() == 8 && r.free_space() == 0);
+    CHECK(r.read(out, 16) == 8 && std::string(out, 8) == "ef123456");
+    CHECK(r.size() == 0);
+    r.write("xyz", 3);
+    r.reserve(32);
+    CHECK(r.capacity() == 32 && r.read(out, 16) == 3 && std::string(out, 3) == "xyz");
+    CHECK(mico::ext_for_content_type("audio/mpeg") == "mp3");
+    CHECK(mico::ext_for_content_type("Audio/MP4; codecs=x") == "m4a");
+    CHECK(mico::ext_for_content_type("audio/x-flac") == "flac");
+    CHECK(mico::ext_for_content_type("") == "m4a");
 }
 
 static void test_json_roundtrip() {
@@ -190,6 +209,7 @@ static void test_runtime_extras() {
 int main() {
     test_runtime_extras();
     test_parse_recognition();
+    test_ring_buffer();
     test_json_roundtrip();
     test_tailer();
     test_fuzzy();

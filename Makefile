@@ -10,7 +10,7 @@ BUILD    ?= build
 OPT      ?= -Os
 VERSION  ?= $(shell git describe --tags 2>/dev/null | sed 's/^v//' || true)
 ifeq ($(strip $(VERSION)),)
-VERSION  := 0.1.0
+VERSION  := 0.2.0
 endif
 MICO_VERSION ?= $(VERSION)
 ARCH     ?= $(shell $(CC) -dumpmachine 2>/dev/null | cut -d- -f1)
@@ -30,7 +30,7 @@ LDLIBS   += -lcurl -lm
 
 LUA_SRC  := $(filter-out %/lua.c %/luac.c %/print.c,$(wildcard third_party/lua/src/*.c))
 LUA_OBJ  := $(LUA_SRC:third_party/lua/src/%.c=$(BUILD)/lua/%.o)
-CORE_SRC := src/http.cpp src/llm.cpp src/instruction.cpp src/tail.cpp src/runtime.cpp src/fuzzy.cpp src/sys.cpp src/httpd.cpp
+CORE_SRC := src/http.cpp src/llm.cpp src/instruction.cpp src/tail.cpp src/runtime.cpp src/fuzzy.cpp src/sys.cpp src/httpd.cpp src/saver.cpp src/logger.cpp
 CORE_OBJ := $(CORE_SRC:src/%.cpp=$(BUILD)/%.o)
 
 .PHONY: all test clean dist

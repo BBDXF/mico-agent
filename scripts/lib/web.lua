@@ -10,7 +10,7 @@ M.MASK = "******"
 M.ask = nil       -- function(text) -> reply, err   (set by main.lua)
 M.status_extra = nil  -- function() -> table
 
-local secrets = { { "llm", "api_key" }, { "web", "token" } }
+local secrets = { { "llm", "api_key" }, { "web", "token" }, { "save", "password" } }
 
 -- ---------------------------------------------------------------- turns
 -- Turn: {id, time, source, user, route, reply, error?, duration_ms, status,
@@ -295,6 +295,15 @@ function M.handle(method, path, query, headers, body)
     local last = M.conversations[#M.conversations]
     return json(200, { conversations = setmetatable(out, { __jsontype = "array" }), last_id = last and last.id or 0 })
   end
+  if path == "/api/logs" and method == "GET" then
+    local n = math.floor(tonumber(q.lines) or 200)
+    if n < 1 then n = 1 elseif n > 1000 then n = 1000 end
+    local r = mico.log_tail(n)
+    setmetatable(r.lines, { __jsontype = "array" })
+    return json(200, r)
+  end
+  if path == "/api/save/jobs" and method == "GET" then return json(200, require("saver").list()) end
+  if path == "/api/save/test" and method == "POST" then return json(200, require("saver").test()) end
   if path == "/api/index/sync" and method == "POST" then
     local n, e = require("indexer").sync("manual")
     if not n then return json(500, { error = tostring(e), index = require("indexer").info() }) end

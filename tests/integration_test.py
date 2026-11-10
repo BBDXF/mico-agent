@@ -13,9 +13,11 @@ import socket
 import urllib.request
 import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, unquote, quote
+import base64
 
 LLM_REQUESTS = []
+COMPLETE_REQUESTS = []  # mico.complete (no tools): 边播边存 naming
 FN_REQUESTS = []
 TOKEN = "tok-123"
 TRACKS = [
@@ -51,6 +53,104 @@ BILI_REQUESTS = []
 REMOTE_PLUGIN = ("return {name='remote', type='online', version='1', description='r',"
                  " search=function() return {} end, stream=function(id) return 'http://x/'..id end}")
 AUDIO = bytes(range(256)) * 12000  # ~3 MB
+
+
+# Knobs for the mock online source (边播边存 tests).
+MOCK = {"nolen": False, "slow": False, "title": None, "duration": "3:05", "norm": "error"}
+
+# ---------------------------------------------------------------- mock WebDAV
+DAV = {"files": {}, "cols": set(["/"]), "log": [], "reject_chunked": False}
+
+
+class DavHandler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def reply(self, status, length=0):
+        self.send_response(status)
+        self.send_header("Content-Length", str(length))
+        self.end_headers()
+
+    def path_(self):
+        return unquote(urlparse(self.path).path)
+
+    def authed(self):
+        want = "Basic " + base64.b64encode(b"nas:pw").decode()
+        if self.headers.get("Authorization") != want:
+            self.reply(401)
+            return False
+        return True
+
+    def read_body(self):
+        if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
+            out = b""
+            while True:
+                line = self.rfile.readline()
+                if not line:
+                    raise IOError("truncated chunked body")
+                n = int(line.strip().split(b";")[0], 16)
+                if n == 0:
+                    self.rfile.readline()
+                    return out, True
+                data = self.rfile.read(n)
+                if len(data) != n:
+                    raise IOError("truncated chunk")
+                out += data
+                self.rfile.readline()
+        n = int(self.headers.get("Content-Length") or 0)
+        data = self.rfile.read(n)
+        if len(data) != n:
+            raise IOError("truncated body")
+        return data, False
+
+    def handle_dav(self):
+        p = self.path_()
+        DAV["log"].append((self.command, p, dict(self.headers)))
+        if not self.authed():
+            return
+        m = self.command
+        parent = p.rstrip("/").rsplit("/", 1)[0] + "/"
+        if m == "MKCOL":
+            if p in DAV["cols"]:
+                return self.reply(405)
+            if parent not in DAV["cols"]:
+                return self.reply(409)
+            DAV["cols"].add(p)
+            return self.reply(201)
+        if m == "PROPFIND":
+            return self.reply(207 if p in DAV["cols"] or p in DAV["files"] else 404)
+        if m == "HEAD":
+            if p in DAV["files"]:
+                return self.reply(200, len(DAV["files"][p]))
+            return self.reply(404)
+        if m == "PUT":
+            try:
+                data, chunked = self.read_body()
+            except (IOError, ValueError):
+                DAV["log"].append(("PUT-ABORTED", p, {}))
+                self.close_connection = True
+                return
+            if chunked and DAV["reject_chunked"]:
+                return self.reply(411)
+            DAV["files"][p] = data
+            DAV["log"].append(("PUT-DONE", p, {"chunked": chunked, "len": len(data)}))
+            return self.reply(201)
+        if m == "MOVE":
+            dest = unquote(urlparse(self.headers.get("Destination", "")).path)
+            if p not in DAV["files"]:
+                return self.reply(404)
+            if dest in DAV["files"] and self.headers.get("Overwrite") == "F":
+                return self.reply(412)
+            DAV["files"][dest] = DAV["files"].pop(p)
+            return self.reply(201)
+        if m == "DELETE":
+            if p in DAV["files"]:
+                del DAV["files"][p]
+                return self.reply(204)
+            return self.reply(404)
+        self.reply(405)
+
+    do_MKCOL = do_PROPFIND = do_HEAD = do_PUT = do_MOVE = do_DELETE = handle_dav
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -116,7 +216,8 @@ class Handler(BaseHTTPRequestHandler):
             if "buvid3=BUVID-TEST" not in (self.headers.get("Cookie") or ""):
                 return self.send_json({"code": -412, "message": "no cookie"}, 412)
             return self.send_json({"code": 0, "data": {"result": [
-                {"bvid": "BV1test", "title": '<em class="keyword">测试</em>视频 &amp; 歌', "author": "UP主", "duration": "3:05"},
+                {"bvid": "BV1test", "title": MOCK["title"] or '<em class="keyword">测试</em>视频 &amp; 歌', "author": "UP主",
+                 "duration": MOCK["duration"]},
                 {"bvid": "BV2test", "title": "另一个", "author": "B", "duration": "1:00"}]}})
         if u.path == "/x/web-interface/view":
             return self.send_json({"code": 0, "data": {"cid": 42 if q.get("bvid") == "BV1test" else 7}})
@@ -139,14 +240,26 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(status)
             for k, v in headers.items():
                 self.send_header(k, v)
-            self.send_header("Content-Length", str(len(data)))
+            if not MOCK["nolen"]:
+                self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             for i in range(0, len(data), 65536):
-                self.wfile.write(data[i:i + 65536])
+                if MOCK["slow"]:
+                    time.sleep(0.05)
+                try:
+                    self.wfile.write(data[i:i + 65536])
+                except OSError:
+                    return
             return
         self.send_json({"code": -404, "message": "nf"}, 404)
 
     def llm(self, body):
+        if not body.get("tools"):
+            # One-shot mico.complete (no tools): reply with MOCK["norm"] or fail.
+            COMPLETE_REQUESTS.append(body)
+            if MOCK["norm"] == "error":
+                return self.send_json({"error": "mock failure"}, 500)
+            return self.send_json({"choices": [{"message": {"role": "assistant", "content": MOCK["norm"]}}]})
         LLM_REQUESTS.append(body)
         msgs = body["messages"]
         # Messages of the current turn: everything after the last user message.
@@ -217,7 +330,8 @@ def web_tests(binary, script, env, cfg_path):
         os.mkdir(tdir)
         with open(os.path.join(root, "tools", "get_time.lua")) as src, open(os.path.join(tdir, "get_time.lua"), "w") as dst:
             dst.write(src.read())
-        wenv = dict(env, MICO_INSTRUCTION_LOG=log, MICO_WEB_LISTEN="127.0.0.1:%d" % port,
+        logfile = os.path.join(d, "agent.log")
+        wenv = dict(env, MICO_LOG_FILE=logfile, MICO_INSTRUCTION_LOG=log, MICO_WEB_LISTEN="127.0.0.1:%d" % port,
                     MICO_WEB_TOKEN="tk", MICO_PLUGINS_DIR=pdir, MICO_TOOLS_DIR=tdir)
         proc = subprocess.Popen([binary, "-s", script], env=wenv, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, errors="replace")
@@ -480,6 +594,9 @@ def web_tests(binary, script, env, cfg_path):
             if call("GET", "/stream/nope/x")[0] != 502:
                 fail("unknown plugin stream")
 
+            save_tests(js, call)
+            log_tests(js, logfile)
+
             # Voice play in server mode uses the local proxy URL.
             with open(log, "a") as f:
                 f.write(json.dumps({"header": {"dialog_id": "w1", "name": "RecognizeResult",
@@ -537,6 +654,275 @@ def web_tests(binary, script, env, cfg_path):
             out, _ = proc.communicate(timeout=5)
         if "player_play_url" not in out or "127.0.0.1:%d/stream/fnos/g1?token=tk" % port not in out:
             fail("proxy playback url", out)
+
+
+def log_tests(js, logfile):
+    st, j = js("GET", "/api/config")
+    keys = {f["key"] for f in j["schema"]}
+    if not {"log.file", "log.max_kb", "log.keep", "log.stderr"} <= keys:
+        fail("log schema")
+    st, j = js("GET", "/api/logs?lines=5")
+    if st != 200 or j["file"] != logfile or len(j["lines"]) != 5 or j["size"] <= 0 \
+            or not all(isinstance(l, str) for l in j["lines"]):
+        fail("logs tail %r" % j)
+    if "[save]" not in open(logfile, encoding="utf-8", errors="replace").read() + \
+            "".join(open(logfile + ".1", encoding="utf-8", errors="replace").read() if os.path.exists(logfile + ".1") else ""):
+        fail("[save] lines missing from log")
+    if any("pw" in l.split() for l in js("GET", "/api/logs?lines=1000")[1]["lines"]):
+        fail("password logged")
+    if len(js("GET", "/api/logs?lines=5000")[1]["lines"]) > 1000:
+        fail("logs cap")
+    # Rotation: small cap, keep=2.
+    js("PUT", "/api/config", {"log": {"max_kb": 64, "keep": 2, "stderr": False}})
+    for i in range(800):
+        js("POST", "/api/ask", {"text": "你好" + "x" * 250})
+    sizes = [os.path.getsize(logfile + s) if os.path.exists(logfile + s) else -1 for s in ("", ".1", ".2", ".3")]
+    if sizes[1] < 0 or sizes[2] < 0 or sizes[3] != -1 or max(sizes) > 64 * 1024:
+        fail("rotation sizes %r" % sizes)
+    js("PUT", "/api/config", {"log": {"keep": 0}})
+    for i in range(400):
+        js("POST", "/api/ask", {"text": "你好" + "x" * 200})
+    if os.path.getsize(logfile) > 64 * 1024:
+        fail("keep=0 size")
+    st, j = js("GET", "/api/logs?lines=3")
+    if len(j["lines"]) != 3 or "你好" not in "".join(js("GET", "/api/logs?lines=50")[1]["lines"]):
+        fail("tail after rotation %r" % j)
+    js("PUT", "/api/config", {"log": {"max_kb": None, "keep": None, "stderr": None}})
+
+
+def save_tests(js, call):
+    """边播边存: online track streamed into a mock WebDAV share."""
+    dav = ThreadingHTTPServer(("127.0.0.1", 0), DavHandler)
+    threading.Thread(target=dav.serve_forever, daemon=True).start()
+    dport = dav.server_port
+    base_url = "http://127.0.0.1:%d/音乐/在线 收藏/" % dport
+    folder = "/音乐/在线 收藏/"
+    final = folder + "测试视频.m4a"
+    DAV["cols"].add("/音乐/")
+
+    st, j = js("GET", "/api/config")
+    keys = {f["key"]: f for f in j["schema"]}
+    for k in ("save.enabled", "save.webdav_url", "save.username", "save.password", "save.filename",
+              "save.min_duration_s", "save.max_duration_s", "save.max_size_mb", "save.queue_size",
+              "save.skip_keywords", "save.require_match", "save.normalize", "save.normalize_timeout_ms",
+              "save.require_artist"):
+        if k not in keys or not keys[k].get("label") or not keys[k].get("help"):
+            fail("save schema missing %s" % k)
+    d = j["defaults"]["save"]
+    if d["enabled"] is not False or d["queue_size"] != 3 or keys["save.password"]["type"] != "secret" \
+            or d["max_size_mb"] != 200 or "合集" not in d["skip_keywords"] \
+            or d["normalize"] is not True or d["require_artist"] is not True or d["normalize_timeout_ms"] != 8000:
+        fail("save defaults %r" % d)
+    if js("PUT", "/api/config", {"save": {"queue_size": 21}})[0] != 400 \
+            or js("PUT", "/api/config", {"save": {"max_size_mb": 0}})[0] != 400:
+        fail("save validation")
+
+    def jobs():
+        return js("GET", "/api/save/jobs")[1]
+
+    def play_and_wait(n_before):
+        js("POST", "/api/ask", {"text": "播放B站的测试视频"})
+        for _ in range(150):
+            jl = jobs()
+            if len(jl) > n_before and jl[0]["status"] not in ("queued", "running"):
+                return jl[0]
+            time.sleep(0.1)
+        fail("save job did not finish %r" % jobs())
+
+    def setcfg(**kw):
+        st, j = js("PUT", "/api/config", {"save": kw})
+        if st != 200:
+            fail("save cfg %r" % j)
+
+    # Disabled (default): nothing uploaded, no jobs.
+    DAV["log"].clear()
+    js("POST", "/api/ask", {"text": "播放B站的测试视频"})
+    time.sleep(1.2)
+    if DAV["log"] or jobs() != []:
+        fail("save disabled but uploaded %r" % DAV["log"])
+
+    # Connectivity test.
+    # Basic transfer tests use rule naming without an artist.
+    setcfg(webdav_url="http://127.0.0.1:1/x/", username="nas", password="pw", normalize=False, require_artist=False)
+    st, j = js("POST", "/api/save/test")
+    if st != 200 or j.get("ok") is not False or not j.get("error"):
+        fail("dav test unreachable %r" % j)
+    setcfg(webdav_url=base_url, password="bad")
+    st, j = js("POST", "/api/save/test")
+    if j.get("ok") is not False or j.get("status") != 401:
+        fail("dav test bad auth %r" % j)
+    setcfg(password="pw")
+    st, j = js("POST", "/api/save/test")
+    if j.get("ok") is not True or folder not in DAV["cols"]:
+        fail("dav test ok %r" % j)
+    if js("GET", "/api/config")[1]["config"]["save"]["password"] != "******":
+        fail("save password not masked")
+
+    # Enabled: file arrives under the clean name via .part + MOVE.
+    setcfg(enabled=True)
+    DAV["log"].clear()
+    job = play_and_wait(0)
+    if job["status"] != "done" or DAV["files"].get(final) != AUDIO or job["bytes"] != len(AUDIO) \
+            or job["total"] != len(AUDIO) or "测试视频" not in job["name"]:
+        fail("save done %r %r" % (job, list(DAV["files"])))
+    puts = [l for l in DAV["log"] if l[0] == "PUT"]
+    if not puts or puts[0][1] != final + ".part" or puts[0][2].get("Content-Length") != str(len(AUDIO)) \
+            or not any(l[0] == "MOVE" for l in DAV["log"]) or final + ".part" in DAV["files"]:
+        fail("save .part/move %r" % [(l[0], l[1]) for l in DAV["log"]])
+    st, conv = js("GET", "/api/conversations")
+    steps = [s for s in conv["conversations"][0]["steps"] if s["name"] == "save"]
+    if not steps or "开始保存" not in steps[0]["result"]:
+        fail("save step %r" % conv["conversations"][0])
+
+    # Already there -> skipped (no PUT).
+    DAV["log"].clear()
+    job = play_and_wait(1)
+    if job["status"] != "skipped" or "已存在" not in job.get("reason", "") or any(l[0] == "PUT" for l in DAV["log"]):
+        fail("dedupe %r" % job)
+
+    # No upstream Content-Length -> chunked PUT.
+    del DAV["files"][final]
+    MOCK["nolen"] = True
+    try:
+        DAV["log"].clear()
+        job = play_and_wait(2)
+        done = [l for l in DAV["log"] if l[0] == "PUT-DONE"]
+        if job["status"] != "done" or DAV["files"].get(final) != AUDIO or not done or not done[0][2]["chunked"]:
+            fail("chunked save %r %r" % (job, done))
+        del DAV["files"][final]
+        # Server refuses chunked uploads -> failed, .part cleaned.
+        DAV["reject_chunked"] = True
+        job = play_and_wait(3)
+        DAV["reject_chunked"] = False
+        if job["status"] != "failed" or "411" not in job.get("reason", "") or DAV["files"]:
+            fail("411 %r %r" % (job, list(DAV["files"])))
+        # Size limit exceeded mid-transfer -> failed, .part deleted.
+        setcfg(max_size_mb=1)
+        DAV["log"].clear()
+        job = play_and_wait(4)
+        if job["status"] != "failed" or DAV["files"] or not any(l[0] == "DELETE" for l in DAV["log"]):
+            fail("size limit stream %r %r" % (job, [(l[0], l[1]) for l in DAV["log"]]))
+    finally:
+        MOCK["nolen"] = False
+        DAV["reject_chunked"] = False
+    # Known size over the limit -> skipped before uploading.
+    DAV["log"].clear()
+    job = play_and_wait(5)
+    if job["status"] != "skipped" or any(l[0] == "PUT" for l in DAV["log"]):
+        fail("size limit known %r" % job)
+    setcfg(max_size_mb=200)
+
+    # Keyword / duration -> skipped without touching WebDAV.
+    MOCK["title"] = "测试视频 LIVE 现场版"
+    DAV["log"].clear()
+    job = play_and_wait(6)
+    MOCK["title"] = None
+    if job["status"] != "skipped" or "关键词" not in job.get("reason", "") or DAV["log"]:
+        fail("keyword skip %r" % job)
+    MOCK["duration"] = "0:30"
+    job = play_and_wait(7)
+    MOCK["duration"] = "3:05"
+    if job["status"] != "skipped" or "时长" not in job.get("reason", "") or DAV["log"]:
+        fail("duration skip %r" % job)
+
+    # queue_size = 0: a second request while one is saving is dropped.
+    setcfg(queue_size=0)
+    MOCK["slow"] = True
+    try:
+        js("POST", "/api/ask", {"text": "播放B站的测试视频"})
+        js("POST", "/api/ask", {"text": "播放B站的测试视频"})
+        st, conv = js("GET", "/api/conversations")
+        steps = [s for s in conv["conversations"][0]["steps"] if s["name"] == "save"]
+        if len(jobs()) != 9 or not steps or "队列已满" not in steps[0]["result"]:
+            fail("queue_size 0 %r %r" % (jobs()[:2], steps))
+        for _ in range(100):
+            if jobs()[0]["status"] not in ("queued", "running"):
+                break
+            time.sleep(0.1)
+        if jobs()[0]["status"] != "skipped":  # file exists from the earlier save? no: removed -> done
+            pass
+    finally:
+        MOCK["slow"] = False
+    setcfg(queue_size=3)
+    for _ in range(100):
+        if jobs()[0]["status"] not in ("queued", "running"):
+            break
+        time.sleep(0.1)
+    naming_tests(js, jobs, setcfg, folder)
+    setcfg(enabled=False, queue_size=3)
+    dav.shutdown()
+
+
+def naming_tests(js, jobs, setcfg, folder):
+    """边播边存 naming: LLM normalization, library spelling, rule fallback."""
+    def play(text):
+        top = jobs()[0]["id"] if jobs() else 0
+        js("POST", "/api/ask", {"text": text})
+        for _ in range(150):
+            jl = jobs()
+            if jl and jl[0]["id"] > top and jl[0]["status"] not in ("queued", "running"):
+                st, conv = js("GET", "/api/conversations")
+                notes = [s["result"] for s in conv["conversations"][0]["steps"] if s["name"] == "save"]
+                return jl[0], " | ".join(notes)
+            time.sleep(0.1)
+        st, lg = js("GET", "/api/logs?lines=40")
+        fail("naming job did not finish %r" % jobs()[:2], "\n".join(lg.get("lines", [])))
+
+    setcfg(normalize=True, require_artist=True, require_match=True)
+    # LLM fixes the homophone and strips decorations.
+    MOCK["title"] = "【4K】周杰轮 七里香 MV"
+    MOCK["norm"] = '```json\n{"artist": "周杰伦", "title": "七里香", "confident": true}\n```'
+    n = len(COMPLETE_REQUESTS)
+    job, notes = play("播放B站的周杰轮的七里香")
+    f = folder + "周杰伦 - 七里香.m4a"
+    if job["status"] != "done" or DAV["files"].get(f) != AUDIO or "命名来源 llm" not in notes or "LLM" not in notes:
+        fail("llm naming %r %r %r" % (job, notes, list(DAV["files"])))
+    req = COMPLETE_REQUESTS[n] if len(COMPLETE_REQUESTS) > n else {}
+    prompt = json.dumps(req.get("messages"), ensure_ascii=False)
+    if req.get("tools") or "周杰轮的七里香" not in prompt or "【4K】周杰轮 七里香 MV" not in prompt:
+        fail("complete request %r" % req)
+    if any("七里香" in json.dumps(r["messages"], ensure_ascii=False) and "confident" in json.dumps(r["messages"], ensure_ascii=False)
+           for r in LLM_REQUESTS):
+        fail("naming prompt leaked into agent history")
+    del DAV["files"][f]
+
+    # Not the original -> skipped.
+    MOCK["norm"] = '{"artist": "周杰伦", "title": "七里香", "confident": false}'
+    job, notes = play("播放B站的周杰轮的七里香")
+    if job["status"] != "skipped" or "大模型判断不是原曲" not in job.get("reason", "") or f in DAV["files"]:
+        fail("confident=false %r" % job)
+
+    # LLM error -> rule fallback: "周杰轮" is a library artist -> split + library spelling.
+    MOCK["norm"] = "error"
+    job, notes = play("播放B站的周杰轮的七里香")
+    if job["status"] != "done" or f not in DAV["files"] or "rule+library" not in notes or "LLM 失败" not in notes:
+        fail("rule fallback %r %r %r" % (job, notes, list(DAV["files"])))
+    del DAV["files"][f]
+
+    # require_artist: no artist determined -> skipped.
+    MOCK["title"] = None
+    job, notes = play("播放B站的测试视频")
+    if job["status"] != "skipped" or "未确定歌手" not in job.get("reason", ""):
+        fail("require_artist %r" % job)
+
+    # Library spelling wins over the LLM's.
+    MOCK["title"] = "【Hi-Res】BEYOND 海阔天空"
+    MOCK["norm"] = '好的：{"artist": "BEYOND", "title": "海阔天空", "confident": true}'
+    job, notes = play("播放B站的beyond的海阔天空")
+    f = folder + "Beyond - 海阔天空.m4a"
+    if job["status"] != "done" or f not in DAV["files"] or "llm+library" not in notes:
+        fail("library spelling %r %r %r" % (job, notes, list(DAV["files"])))
+
+    # "我的歌声里" is not split into artist "我".
+    MOCK["norm"] = "error"
+    MOCK["title"] = "曲婉婷 歌声里 原唱"
+    setcfg(require_artist=False, require_match=False)
+    job, notes = play("播放B站的我的歌声里")
+    f = folder + "我的歌声里.m4a"
+    if job["status"] != "done" or f not in DAV["files"]:
+        fail("no split %r %r %r" % (job, notes, list(DAV["files"])))
+    MOCK["title"] = None
+    setcfg(require_match=True)
 
 
 def main():

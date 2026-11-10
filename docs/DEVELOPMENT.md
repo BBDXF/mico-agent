@@ -12,7 +12,7 @@ make test     # 单元测试 + 集成测试（Python mock OpenAI 服务，dry-ru
 依赖：g++（C++14）、libcurl 开发头文件。Lua 5.1.5 与 nlohmann/json 3.11.3 已放在 `third_party/`。
 目标固件（1.77.6）自带 glibc 2.25、libstdc++ 6.0.22、libcurl 4.4.0，只动态链接 libc/libstdc++/libcurl。
 
-`make` 通过 `-D` 注入版本信息：`MICO_VERSION`（默认 `0.1.0`，可 `make MICO_VERSION=x.y.z`）、
+`make` 通过 `-D` 注入版本信息：`MICO_VERSION`（默认 `0.2.0`，可 `make MICO_VERSION=x.y.z`）、
 构建时 `git rev-parse --short HEAD`（失败为 `unknown`）、构建时间；运行时 `mico.version()` / `GET /api/status` 的 `version` 字段
 还包含 Lua 版本、libcurl 版本与编译器。
 
@@ -96,12 +96,47 @@ Web 保存时合并写回配置文件（格式化 JSON）并立即生效（LLM�
 | `GET /api/tool-template` | `{source}` 新工具骨架 |
 | `POST /api/ask {text}` | 测试提问（不朗读） |
 | `GET /stream/<plugin>/<id>` | 流代理 |
+| `GET /api/save/jobs` | 边播边存任务（最近 20 个，新的在前）：`[{id, name, status:"queued"\|"running"\|"done"\|"skipped"\|"failed", reason?, bytes, total?, started, finished?, ms}]`；时间格式 `YYYY-MM-DD HH:MM:SS`；`total` 未知时缺省 |
+| `POST /api/save/test` | 检查 WebDAV 连通性（对目录 PROPFIND Depth 0，不存在时 MKCOL）→ `{ok, status, error?}` |
+| `GET /api/logs?lines=200` | 运行日志末尾 N 行（最多 1000）→ `{file, size, lines:[...]}`；未配置日志文件时返回内存中的最近行 |
 
 **流代理**：Lua 先解析出上游 URL 与请求头，C++ fork 子进程用 libcurl 拉取并边收边转发（透传 `Range`、
 `Content-Type/Length/Range`、`Accept-Ranges`；客户端慢时最多预读 `playback.buffer_kb`，之后阻塞上游）。
 默认播放方式即 `ubus call mediaplayer player_play_url` 播放 `http://127.0.0.1:PORT/stream/...`；
 `playback.mode="download"`（或 Web 服务未运行，如 `--once`）时回退为下载到 `/tmp/mico_play`（上限 `max_mb`，下载前与停止时删除旧文件）。
 注意：在线音乐源返回的音频是 DASH m4a 片段，原厂播放器能否解码需在真机验证。
+
+## 边播边存（`scripts/lib/saver.lua` + `src/saver.cpp`）
+
+配置 `save.*`（默认 `enabled=false`）。在线音乐源的歌曲开始播放后（快路径或 `music_play`），依次检查：
+时长（搜索结果已知时，`min_duration_s`–`max_duration_s`）、`skip_keywords`（原始标题，不区分大小写，按字节匹配），然后确定歌手/歌名（命名来源记录在对话 `save` 步骤与 `[save]` 日志：`llm` / `rule`，经曲库修正时加 `+library`，以及 LLM 耗时）：
+
+1. **大模型**（`save.normalize`，默认开）：播放开始后用 `mico.complete{messages, max_tokens?, timeout_ms?}`（与对话相同的 llm 配置含 `extra`，不带工具、不写入对话历史；在主线程同步执行，超时 `normalize_timeout_ms` 默认 8000）
+   提交用户原话、解析出的查询、在线结果原始标题、上传者、时长，要求只返回 `{"artist","title","confident"}`（去修饰、修正同音字、多歌手用“、”）。
+   回复会去掉 ```json 围栏并取第一个 `{...}` 解析。`confident=false` 时跳过（“大模型判断不是原曲/不确定”）。
+2. **规则**（大模型关闭或失败时）：`music_play` 的 `title` / `artist`，否则用查询；仅当结果标题不含整句、且“的”左侧是曲库已知歌手或出现在结果标题/上传者中时才按“歌手的歌名”拆分（“我的歌声里”不拆）。
+   规则命名还要通过 `require_match`（结果标题须包含所点歌名/歌手，支持拼音模糊）。
+3. **曲库修正**：索引同步时同时建立 `music_artists` 索引（去重歌手）；歌手与曲库歌手模糊匹配 ≥ 0.8 时采用曲库写法（如 BEYOND → Beyond）。
+4. `require_artist`（默认开）：最终没有歌手时不保存。
+
+文件名按 `filename` 模板生成（`{artist} {title} {ext}`，非法字符替换为 `_`，路径段按 UTF-8 百分号编码），扩展名由上游 Content-Type 决定（mp4→m4a、mpeg→mp3、flac、ogg，默认 m4a）。
+
+通过检查后进入队列（同时只有一个任务在保存；排队上限 `queue_size`，0 表示正在保存时直接放弃）。
+任务在 fork 出的子进程中运行（不触碰 Lua）：MKCOL 目录（405 忽略）→ 拉取上游响应头 → 大小超过 `max_size_mb` 跳过
+→ HEAD 目标文件，已存在则跳过 → 上游数据经 `playback.buffer_kb` 大小的环形缓冲直接 PUT 到 `<名称>.part`
+（上游有 Content-Length 时带长度，否则 chunked；不落盘）→ 校验大小 → `MOVE`（`Overwrite: F`）为最终文件名。
+失败时 DELETE `.part`；大小未知时传输中超限即中止。子进程把进度写到 `/tmp/mico-save-*.st`（一行），主循环每秒回收子进程并读取。
+成功后下次本地搜索未命中会立即重同步索引，60 秒后也会主动同步一次。所有决策写入运行日志（`[save]` 前缀，不记录密码和完整签名 URL）并在对话里记一条 `save` 步骤。
+
+## 运行日志
+
+C++ 与 `mico.log` 共用一个日志出口（`src/logger.cpp`）：配置 `log.file`（默认 `/tmp/mico-agent.log`，空串只写 stderr）、
+`log.max_kb`（默认 512）、`log.keep`（轮转保留份数，默认 1）、`log.stderr`（同时写 stderr，默认 true）。
+超过上限时 `file → file.1 → …`，总占用 ≤ `max_kb ×（keep+1）`。环境变量 `MICO_LOG_FILE` 可覆盖路径。
+在音箱上请用 `>/dev/null 2>&1` 启动，不要把 stdout 重定向到 `/data`。
+
+其他内存/磁盘占用均有上限：对话 100 轮、保存任务 20 个（队列 ≤ `queue_size`）、LLM 历史 `max_history`、
+在线搜索结果缓存 200 条、工具统计按工具计数、`.bak` 每个文件一份；流代理与保存子进程都由主循环回收。
 
 ## Lua API（全局 `mico`）
 
@@ -124,6 +159,8 @@ Web 保存时合并写回配置文件（格式化 JSON）并立即生效（LLM�
 | `mico.listdir(dir)` / `mico.tool_remove(name)` | 列目录、注销工具 |
 | `mico.version()` | `{app, git, build_time, lua, curl, compiler}` |
 | `mico.now_ms()` | 单调时钟毫秒（计时用） |
+| `mico.save_start{src_url, src_headers, dav_base, name, username, password, max_bytes, buffer_kb, status_path}` / `mico.proc_reap(pid)` / `mico.dav_test{url, username, password}` | 边播边存：启动子进程 / 非阻塞回收 / WebDAV 连通性检查 |
+| `mico.log_config{file, max_kb, keep, stderr}` / `mico.log_tail(n)` | 日志出口配置 / 读取末尾 N 行 |
 | 全局 `on_step(step)`（Lua 定义，可选） | `mico.ask` 每次 LLM 往返 `{kind="llm", name=model, ms, result|error}`、每次工具调用 `{kind="tool", name, args, result|error, ms}` 时回调 |
 | `mico.json_encode(setmetatable({}, {__jsontype="array"}))` | 空表编码为 `[]` |
 

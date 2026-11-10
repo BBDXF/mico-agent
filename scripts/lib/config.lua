@@ -34,6 +34,16 @@ M.defaults = {
   -- mode "proxy" (default): speaker plays http://127.0.0.1:PORT/stream/...;
   -- "download" (opt-in fallback): fetch to /tmp first (max_mb cap).
   playback = { mode = "proxy", max_mb = 30, buffer_kb = 1024 },
+  -- 边播边存: save online tracks to a WebDAV share while playing (off by default).
+  save = {
+    enabled = false, webdav_url = "", username = "", password = "",
+    filename = "{artist} - {title}.{ext}",
+    min_duration_s = 60, max_duration_s = 600, max_size_mb = 200, queue_size = 3,
+    skip_keywords = "合集,串烧,翻唱,cover,伴奏,纯音乐,DJ,remix,live,现场,教学,reaction",
+    require_match = true, normalize = true, normalize_timeout_ms = 8000, require_artist = true,
+  },
+  -- Process log: bounded file with rotation (keep in RAM-backed /tmp on the speaker).
+  log = { file = "/tmp/mico-agent.log", max_kb = 512, keep = 1, stderr = true },
   instruction_log = "/tmp/mico_aivs_lab/instruction.log",
   dry_run = false,
 }
@@ -50,6 +60,7 @@ M.env_map = {
   { { "tools", "dir" }, "MICO_TOOLS_DIR" },
   { { "playback", "mode" }, "MICO_PLAYBACK" },
   { { "instruction_log" }, "MICO_INSTRUCTION_LOG" },
+  { { "log", "file" }, "MICO_LOG_FILE" },
   { { "dry_run" }, "MICO_DRY_RUN", "bool" },
 }
 
@@ -73,6 +84,24 @@ M.schema = {
   { key = "playback.mode", label = "播放方式", type = "enum", options = { "proxy", "download" }, help = "proxy：音箱经本机代理流式播放；download：先下载到 /tmp" },
   { key = "playback.max_mb", label = "下载上限（MB）", type = "number", min = 1, max = 200, help = "download 模式下单个文件大小上限" },
   { key = "playback.buffer_kb", label = "代理缓冲（KB）", type = "number", integer = true, min = 64, max = 8192, help = "proxy 模式的缓冲大小" },
+  { key = "save.enabled", label = "边播边存", type = "bool", help = "播放在线音乐源的歌曲时，同时通过 WebDAV 保存到 NAS（默认关闭）" },
+  { key = "save.webdav_url", label = "WebDAV 目录地址", type = "string", help = "保存目录的 URL，如 http://nas:5005/音乐/在线收藏/；目录不存在时自动创建" },
+  { key = "save.username", label = "WebDAV 用户名", type = "string", help = "Basic 认证用户名；留空不认证" },
+  { key = "save.password", label = "WebDAV 密码", type = "secret", help = "Basic 认证密码；显示为 ****** 时提交不修改" },
+  { key = "save.filename", label = "文件名模板", type = "string", help = "可用 {artist} {title} {ext}；歌手为空时自动去掉分隔符。非法字符 / \\ : * ? \" < > | 替换为 _" },
+  { key = "save.min_duration_s", label = "最短时长（秒）", type = "number", integer = true, min = 0, max = 36000, help = "搜索结果时长低于此值不保存（时长未知时不检查）" },
+  { key = "save.max_duration_s", label = "最长时长（秒）", type = "number", integer = true, min = 0, max = 36000, help = "搜索结果时长超过此值不保存；0 不限制" },
+  { key = "save.max_size_mb", label = "大小上限（MB）", type = "number", integer = true, min = 1, max = 2048, help = "超过此大小不保存；大小未知时传输中超过则中止并删除临时文件" },
+  { key = "save.queue_size", label = "保存队列长度", type = "number", integer = true, min = 0, max = 20, help = "排队等待保存的最大数量；超出的直接放弃。0 表示不排队，正在保存时新的请求直接放弃" },
+  { key = "save.skip_keywords", label = "跳过关键词", type = "string", help = "逗号分隔；标题包含任一关键词（不区分大小写）时不保存" },
+  { key = "save.require_match", label = "要求标题匹配", type = "bool", help = "规则命名时（未用大模型或大模型失败），只有结果标题包含所点歌名（以及所说的歌手，支持拼音模糊）时才保存" },
+  { key = "save.normalize", label = "大模型规范命名", type = "bool", help = "开始保存前调用一次大模型，从用户原话和在线结果标题得出规范的歌手和歌名（修正同音错字、去掉【】/MV/无损等修饰）；判断为翻唱/合集/不确定时不保存。失败时退回规则命名" },
+  { key = "save.normalize_timeout_ms", label = "命名超时（毫秒）", type = "number", integer = true, min = 1000, max = 60000, help = "规范命名的大模型调用超时；调用发生在开始播放之后，会短暂阻塞语音处理" },
+  { key = "save.require_artist", label = "要求歌手", type = "bool", help = "无法确定歌手时不保存" },
+  { key = "log.file", label = "日志文件", type = "string", help = "运行日志路径，默认 /tmp/mico-agent.log（内存盘）；空串只输出到 stderr。不要放在 /data（空间很小）" },
+  { key = "log.max_kb", label = "日志大小上限（KB）", type = "number", integer = true, min = 64, max = 10240, help = "超过后轮转为 .1 文件；总占用 ≤ 上限 ×（保留份数 + 1）" },
+  { key = "log.keep", label = "日志保留份数", type = "number", integer = true, min = 0, max = 5, help = "轮转后保留的旧日志数量（file.1 … file.N）；0 表示直接丢弃" },
+  { key = "log.stderr", label = "同时输出到 stderr", type = "bool", help = "日志同时写到标准错误（在音箱上建议启动时重定向到 /dev/null）" },
   { key = "web.listen", label = "Web 监听地址", type = "string", restart = true, help = "如 0.0.0.0:8080，空串关闭 Web" },
   { key = "web.token", label = "Web 访问令牌", type = "secret", help = "非空时需 Authorization: Bearer 或 ?token=" },
   { key = "shell.enabled", label = "允许 shell 工具", type = "bool", help = "是否注册 run_shell 工具" },

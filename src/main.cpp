@@ -16,6 +16,7 @@
 #include "http.h"
 #include "httpd.h"
 #include "instruction.h"
+#include "logger.h"
 #include "runtime.h"
 #include "tail.h"
 
@@ -61,20 +62,20 @@ int main(int argc, char** argv) {
         rt.config_path = config_path;
         std::string err;
         if (!rt.load_script(script, err)) {
-            std::fprintf(stderr, "load %s: %s\n", script.c_str(), err.c_str());
+            mico::logf("load %s: %s", script.c_str(), err.c_str());
             mico::http_global_cleanup();
             return 1;
         }
 
         if (has_once) {
             if (!rt.call_hook("on_input", {once, "once"}, err)) {
-                std::fprintf(stderr, "on_input: %s\n", err.c_str());
+                mico::logf("on_input: %s", err.c_str());
                 rc = 1;
             }
         } else {
             std::string log_path = rt.config_string("instruction_log", "/tmp/mico_aivs_lab/instruction.log");
             bool from_start = rt.config_number("from_start", 0) != 0;
-            std::fprintf(stderr, "following %s\n", log_path.c_str());
+            mico::logf("following %s", log_path.c_str());
             mico::Tailer tail(log_path, from_start);
             mico::HttpServer web;
             std::string listen = rt.config_string("web.listen", "");
@@ -82,9 +83,9 @@ int main(int argc, char** argv) {
                 std::string lerr;
                 if (web.listen(listen, lerr)) {
                     rt.web_port = web.port();
-                    std::fprintf(stderr, "web: listening on %s (port %d)\n", listen.c_str(), web.port());
+                    mico::logf("web: listening on %s (port %d)", listen.c_str(), web.port());
                 } else {
-                    std::fprintf(stderr, "web: %s\n", lerr.c_str());
+                    mico::logf("web: %s", lerr.c_str());
                 }
             }
             auto handler = [&rt](const mico::WebRequest& req) { return rt.handle_http(req); };
@@ -96,7 +97,7 @@ int main(int argc, char** argv) {
                     last_tick = now;
                     std::string terr;
                     if (!rt.call_hook("on_tick", {}, terr) && terr.rfind("no global function", 0) != 0) {
-                        std::fprintf(stderr, "on_tick: %s\n", terr.c_str());
+                        mico::logf("on_tick: %s", terr.c_str());
                     }
                 }
                 tail.poll([&](const std::string& line) {
@@ -107,7 +108,7 @@ int main(int argc, char** argv) {
                     last_dialog = rec.dialog_id;
                     std::string herr;
                     if (!rt.call_hook("on_input", {rec.text, rec.dialog_id}, herr)) {
-                        std::fprintf(stderr, "on_input: %s\n", herr.c_str());
+                        mico::logf("on_input: %s", herr.c_str());
                     }
                 });
                 // Re-read each iteration so a saved poll_ms applies live.

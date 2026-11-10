@@ -24,6 +24,9 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px;bord
 .btn.d{color:var(--err)}.btn.s{padding:4px 10px;font-size:13px}.btn:disabled{opacity:.5;cursor:default}
 .badge{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;background:#eef1f5;color:var(--mut);margin-right:4px}
 .b-voice{background:#e8f0ff;color:var(--blue)}.b-web{background:#f1e9ff;color:#7a3fd1}.b-fast{background:#e5f7ee;color:var(--ok)}.b-llm{background:#fff1e6;color:var(--pri2)}
+.b-q{background:#eef1f5;color:var(--mut)}.b-run{background:#e8f0ff;color:var(--blue)}.b-done{background:#e5f7ee;color:var(--ok)}.b-skip{background:#fff6e5;color:#8a5a00}.b-fail{background:#fdeaea;color:var(--err)}
+.sj{display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px;flex-wrap:wrap}.sj:last-child{border-bottom:0}.sj .nm{flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sj .rs{flex-basis:100%;font-size:12px}
+.pbar{width:80px;height:6px;background:#eef1f5;border-radius:3px;overflow:hidden;display:inline-block;vertical-align:middle}.pbar i{display:block;height:100%;background:var(--blue)}
 .b-local{background:#e5f7ee;color:var(--ok)}.b-online{background:#e8f0ff;color:var(--blue)}.b-err{background:#fdeaea;color:var(--err)}
 .tg{position:relative;width:40px;height:22px;display:inline-block;flex:none}.tg input{opacity:0;width:0;height:0}
 .tg span{position:absolute;inset:0;background:#cfd6de;border-radius:99px;transition:.2s;cursor:pointer}
@@ -129,11 +132,28 @@ async function loadStatus(){
     <div class="grid" style="margin-top:12px">${kv('启动时间',s.started?fmtTime(s.started):'')}${kv('已运行',fmtDur(s.uptime))}${kv('Web 端口',s.web_port)}
     ${kv('配置文件',s.config_path)}${kv('索引大小',s.index_size)}${kv('对话数',s.conversations)}${kv('正在播放',s.now_playing||'无')}</div></div>
     ${indexCard(s)}
+    <div class="card hide" id="saveCard"></div>
     <div class="card"><h3>播放</h3><div class="grid">${kv('模式',p.mode==='download'?'下载后播放 (download)':p.mode==='proxy'?'边下边播 (proxy)':p.mode)}${kv('缓冲',p.buffer_kb!=null?p.buffer_kb+' KB':'')}${kv('最大下载',p.max_mb!=null?p.max_mb+' MB':'')}</div></div>
     <div class="card"><h3>已加载插件</h3>${(s.plugins||[]).map(n=>`<span class="badge">${esc(typeof n==='string'?n:n.name)}</span>`).join('')||'<span class="mut">无</span>'}</div>
     ${aboutCard(v)}`;
-  }catch(e){el.innerHTML=`<div class="msg e">加载失败：${esc(e.message)}</div>`}
+  }catch(e){el.innerHTML=`<div class="msg e">加载失败：${esc(e.message)}</div>`;return}
+  loadSave();
 }
+/* 边播边存 */
+let saveTimer=null;
+const SJ={queued:['排队','b-q'],running:['保存中','b-run'],done:['完成','b-done'],skipped:['跳过','b-skip'],failed:['失败','b-fail']};
+function fmtB(b){if(b==null)return'';return b<1048576?(b/1024).toFixed(0)+' KB':(b/1048576).toFixed(1)+' MB'}
+function jobHTML(j){const[l,c]=SJ[j.status]||[j.status,''];const run=j.status==='running';
+  const sz=run&&j.total?`<span class="pbar" title="${fmtB(j.bytes)} / ${fmtB(j.total)}"><i style="width:${Math.min(100,j.bytes/j.total*100).toFixed(0)}%"></i></span> <span class="mut small">${fmtB(j.bytes)} / ${fmtB(j.total)}</span>`:`<span class="mut small">${fmtB(j.bytes||(j.total||0))}</span>`;
+  return `<div class="sj"><span class="badge ${c}">${esc(l)}</span><span class="nm" title="${esc(j.name)}">${esc(j.name||'')}</span>${sz}<span class="mut small">${j.ms!=null&&j.status!=='queued'?fmtMs(j.ms):''}</span>${j.reason?`<span class="rs" style="color:${j.status==='failed'?'var(--err)':'var(--mut)'}">${esc(j.reason)}</span>`:''}</div>`}
+async function loadSave(){const el=$('#saveCard');if(!el)return;clearTimeout(saveTimer);
+  let en;try{const c=await api('/api/config')||{};const sv=(c.effective||{}).save;if(!sv){el.classList.add('hide');return}en=!!sv.enabled}catch(e){el.classList.add('hide');return}
+  let jobs;try{jobs=await api('/api/save/jobs')||[];if(!Array.isArray(jobs))jobs=jobs.jobs||[]}catch(e){if(e.status===404){el.classList.add('hide');return}jobs=null}
+  if(jobs)jobs=jobs.slice().sort((a,b)=>(b.started||0)-(a.started||0)||(b.id||0)-(a.id||0));
+  el.innerHTML=`<div class="row"><h3 class="sp" style="margin:0">边播边存</h3><span class="badge ${en?'b-done':''}">${en?'已开启':'未开启'}</span><button class="btn s" onclick="loadSave()">刷新</button></div>
+  <div style="margin-top:8px">${jobs==null?'<div class="msg e">加载保存记录失败</div>':jobs.length?jobs.map(jobHTML).join(''):'<p class="mut">暂无保存记录</p>'}</div>`;
+  el.classList.remove('hide');
+  if(jobs&&jobs.some(j=>j.status==='queued'||j.status==='running'))saveTimer=setTimeout(()=>{if(cur==='status'&&!document.hidden)loadSave()},3000)}
 let idxSyncing=false;
 function indexCard(s){const x=s.index||{};const busy=idxSyncing||!!x.syncing;
   const n=x.tracks!=null?x.tracks:s.index_size;
@@ -184,7 +204,14 @@ async function ask(){const i=$('#askIn'),b=$('#askBtn'),tx=i.value.trim();if(!tx
 $('#askBtn').onclick=ask;$('#askIn').onkeydown=e=>{if(e.key==='Enter'&&!e.isComposing)ask()};
 
 /* config: schema-driven */
-const GRP={llm:'大模型',agent:'智能体',fast:'快速点歌',playback:'播放',web:'网页'},GORD=['llm','agent','fast','playback','web'];
+async function testSave(){const m=$('#saveTestMsg'),b=$('#saveTest');
+  if(CS&&changes().length){m.innerHTML='<span style="color:#8a5a00">请先保存配置再测试</span>';return}
+  b.disabled=true;m.innerHTML='<span class="spin"></span> 测试中…';
+  try{const r=await api('/api/save/test',{method:'POST'})||{};
+    m.innerHTML=r.ok?`<span style="color:var(--ok)">连接成功 (HTTP ${esc(r.status)})</span>`:`<span style="color:var(--err)">${esc(r.error||('连接失败'+(r.status?` (HTTP ${r.status})`:'')))}</span>`}
+  catch(e){m.innerHTML=`<span style="color:var(--err)">${esc(e.message)}</span>`}
+  b.disabled=false}
+const GRP={llm:'大模型',agent:'智能体',fast:'快速点歌',playback:'播放',save:'边播边存',web:'网页'},GORD=['llm','agent','fast','playback','save','web'];
 const getP=(o,k)=>k.split('.').reduce((a,x)=>a==null?undefined:a[x],o);
 function setP(o,k,v){const ps=k.split('.');let c=o;ps.slice(0,-1).forEach(x=>{if(c[x]==null||typeof c[x]!=='object')c[x]={};c=c[x]});c[ps[ps.length-1]]=v}
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
@@ -198,7 +225,7 @@ async function loadConfig(){const el=$('#t-config');let r;
   const order=[...GORD.filter(g=>groups[g]),...Object.keys(groups).filter(g=>!GORD.includes(g))];
   el.innerHTML=`<div class="card cfg-top"><div class="row"><div class="sp"><b>配置文件</b> <span class="mut small mono">${esc(r.path||'')}</span></div>
     <span class="mut small" id="cfgDirty">没有未保存的修改</span><button class="btn" id="cfgReset" disabled>撤销修改</button><button class="btn p" id="cfgSave" disabled>保存</button></div><div id="cfgMsg"></div></div>`+
-   order.map(g=>`<div class="card"><h3>${GRP[g]||'其他'} <span class="mut small mono">${g==='_'?'':esc(g)}</span></h3>${groups[g].map(fieldHTML).join('')}</div>`).join('')+
+   order.map(g=>`<div class="card"><h3>${GRP[g]||'其他'} <span class="mut small mono">${g==='_'?'':esc(g)}</span></h3>${groups[g].map(fieldHTML).join('')}${g==='save'?`<div class="row" style="margin-top:10px;gap:8px"><button class="btn s" id="saveTest" onclick="testSave()">测试连接</button><span id="saveTestMsg" class="small"></span></div>`:''}</div>`).join('')+
    `<details class="card adv"><summary><b>高级：直接编辑 JSON</b> <span class="mut small">适合修改上面没有列出的配置项</span></summary>
     <p class="mut small">这里是配置文件的原始内容，保存时整个替换。密钥显示为 ****** 时保持不变即不会修改。</p>
     <textarea class="mono" id="cfgRaw" rows="16" spellcheck="false"></textarea><div class="row" style="margin-top:8px"><span class="sp"></span><button class="btn p" id="cfgRawSave">保存 JSON</button></div><div id="cfgRawMsg"></div></details>`;

@@ -40,6 +40,7 @@ function M.sync(reason)
   local now = os.time()
   local t0 = mico.now_ms()
   M.last_sync_at = t0
+  M.force_miss = false
   M.status.syncing = true
   local n, err = plugins.sync_index(M.INDEX)
   M.status.syncing = false
@@ -81,7 +82,9 @@ end
 -- True when a miss may trigger a resync (last attempt older than miss_resync_min).
 function M.miss_resync_due()
   local m = tonumber(cfg().miss_resync_min) or 0
-  if m <= 0 or #plugins.of_type("local") == 0 then return false end
+  if #plugins.of_type("local") == 0 then return false end
+  if M.force_miss then return true end  -- a file was just saved to the NAS
+  if m <= 0 then return false end
   return not M.last_sync_at or (mico.now_ms() - M.last_sync_at) >= m * 60000
 end
 

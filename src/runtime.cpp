@@ -1,6 +1,7 @@
 #include "runtime.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -12,6 +13,8 @@
 #include <ctime>
 
 #include "http.h"
+#include "saver.h"
+#include "logger.h"
 
 #include <curl/curl.h>
 
@@ -155,19 +158,54 @@ static std::string opt_field(lua_State* L, int idx, const char* key, const std::
 
 static int l_log(lua_State* L) {
     int n = lua_gettop(L);
-    std::time_t t = std::time(nullptr);
-    char ts[32];
-    std::strftime(ts, sizeof ts, "%H:%M:%S", std::localtime(&t));
-    std::fprintf(stderr, "[%s]", ts);
+    std::string line;
     for (int i = 1; i <= n; ++i) {
         lua_getglobal(L, "tostring");
         lua_pushvalue(L, i);
         lua_call(L, 1, 1);
-        std::fprintf(stderr, " %s", lua_tostring(L, -1));
+        if (i > 1) line += ' ';
+        const char* s = lua_tostring(L, -1);
+        line += s ? s : "";
         lua_pop(L, 1);
     }
-    std::fprintf(stderr, "\n");
+    log_line(line);
     return 0;
+}
+
+// mico.log_config{file, max_kb, keep, stderr}
+static int l_log_config(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    LogConfig c = log_config();
+    c.file = opt_field(L, 1, "file", c.file);
+    lua_getfield(L, 1, "max_kb");
+    if (lua_isnumber(L, -1)) c.max_bytes = static_cast<long long>(lua_tonumber(L, -1) * 1024);
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "keep");
+    if (lua_isnumber(L, -1)) c.keep = static_cast<int>(lua_tonumber(L, -1));
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "stderr");
+    if (lua_isboolean(L, -1)) c.echo_stderr = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+    log_configure(c);
+    return 0;
+}
+
+// mico.log_tail(n) -> {file, size, lines}
+static int l_log_tail(lua_State* L) {
+    size_t n = static_cast<size_t>(luaL_optnumber(L, 1, 200));
+    std::vector<std::string> lines = log_tail(n);
+    lua_createtable(L, 0, 3);
+    lua_pushstring(L, log_config().file.c_str());
+    lua_setfield(L, -2, "file");
+    lua_pushnumber(L, static_cast<double>(log_size()));
+    lua_setfield(L, -2, "size");
+    lua_createtable(L, static_cast<int>(lines.size()), 0);
+    for (size_t i = 0; i < lines.size(); ++i) {
+        lua_pushlstring(L, lines[i].data(), lines[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    lua_setfield(L, -2, "lines");
+    return 1;
 }
 
 static int l_json_encode(lua_State* L) {
@@ -406,6 +444,37 @@ static int l_ask(lua_State* L) {
     return 1;
 }
 
+// mico.complete{messages={...}, max_tokens=?, timeout_ms=?} -> text | nil, err
+// One-shot LLM call with the configured llm (incl. extra); no tools, not recorded in history.
+static int l_complete(lua_State* L) {
+    Runtime* r = rt(L);
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_getfield(L, 1, "messages");
+    json messages = lua_istable(L, -1) ? lua_to_json(L, -1) : json();
+    lua_pop(L, 1);
+    if (!messages.is_array() || messages.empty()) return luaL_error(L, "mico.complete: messages required");
+    LlmConfig cfg = r->llm;
+    lua_getfield(L, 1, "timeout_ms");
+    if (lua_isnumber(L, -1)) cfg.timeout_ms = static_cast<long>(lua_tonumber(L, -1));
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "max_tokens");
+    if (lua_isnumber(L, -1)) {
+        if (!cfg.extra.is_object()) cfg.extra = json::object();
+        cfg.extra["max_tokens"] = static_cast<long>(lua_tonumber(L, -1));
+    }
+    lua_pop(L, 1);
+    LlmResult res = llm_chat(cfg, messages, json::array());
+    if (!res.ok) {
+        lua_pushnil(L);
+        lua_pushstring(L, res.error.c_str());
+        return 2;
+    }
+    const json& c = res.message.contains("content") ? res.message["content"] : json();
+    std::string text = c.is_string() ? c.get<std::string>() : "";
+    lua_pushlstring(L, text.data(), text.size());
+    return 1;
+}
+
 static int l_config_path(lua_State* L) {
     const std::string& p = rt(L)->config_path;
     if (p.empty()) return 0;
@@ -490,6 +559,68 @@ static int l_version(lua_State* L) {
     return 1;
 }
 
+// mico.save_start{src_url, src_headers={}, dav_base, name, username, password,
+//                 max_bytes, buffer_kb, status_path} -> pid | nil, err
+static int l_save_start(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    SaveJob j;
+    j.src_url = opt_field(L, 1, "src_url", "");
+    j.dav_base = opt_field(L, 1, "dav_base", "");
+    j.name = opt_field(L, 1, "name", "");
+    j.user = opt_field(L, 1, "username", "");
+    j.pass = opt_field(L, 1, "password", "");
+    j.status_path = opt_field(L, 1, "status_path", "");
+    lua_getfield(L, 1, "max_bytes");
+    if (lua_isnumber(L, -1)) j.max_bytes = static_cast<long long>(lua_tonumber(L, -1));
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "buffer_kb");
+    if (lua_isnumber(L, -1)) j.buffer_bytes = static_cast<size_t>(lua_tonumber(L, -1)) * 1024;
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "src_headers");
+    if (lua_istable(L, -1)) {
+        lua_pushnil(L);
+        while (lua_next(L, -2) != 0) {
+            if (lua_type(L, -2) == LUA_TSTRING && lua_isstring(L, -1)) j.src_headers[lua_tostring(L, -2)] = lua_tostring(L, -1);
+            lua_pop(L, 1);
+        }
+    }
+    lua_pop(L, 1);
+    if (j.src_url.empty() || j.dav_base.empty() || j.name.empty()) return luaL_error(L, "mico.save_start: src_url, dav_base, name required");
+    pid_t pid = save_spawn(j);
+    if (pid < 0) {
+        lua_pushnil(L);
+        lua_pushstring(L, "fork failed");
+        return 2;
+    }
+    lua_pushnumber(L, pid);
+    return 1;
+}
+
+// mico.proc_reap(pid) -> true when the child has exited (non-blocking)
+static int l_proc_reap(lua_State* L) {
+    pid_t pid = static_cast<pid_t>(luaL_checknumber(L, 1));
+    int st;
+    pid_t w = waitpid(pid, &st, WNOHANG);
+    lua_pushboolean(L, w == pid || (w < 0 && errno == ECHILD));
+    return 1;
+}
+
+// mico.dav_test{url, username, password} -> {ok, status, error?}
+static int l_dav_test(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    DavTestResult r = dav_test(opt_field(L, 1, "url", ""), opt_field(L, 1, "username", ""), opt_field(L, 1, "password", ""));
+    lua_createtable(L, 0, 3);
+    lua_pushboolean(L, r.ok);
+    lua_setfield(L, -2, "ok");
+    lua_pushnumber(L, static_cast<double>(r.status));
+    lua_setfield(L, -2, "status");
+    if (!r.error.empty()) {
+        lua_pushstring(L, r.error.c_str());
+        lua_setfield(L, -2, "error");
+    }
+    return 1;
+}
+
 static int l_reset(lua_State* L) {
     rt(L)->reset();
     return 0;
@@ -502,12 +633,13 @@ Runtime::Runtime() : L_(luaL_newstate()) {
     static const luaL_Reg fns[] = {
         {"log", l_log},       {"json_encode", l_json_encode}, {"json_decode", l_json_decode},
         {"http", l_http},     {"exec", l_exec},               {"sleep", l_sleep},
-        {"tool", l_tool},     {"configure", l_configure},     {"ask", l_ask},
+        {"tool", l_tool},     {"configure", l_configure},     {"ask", l_ask}, {"complete", l_complete},
         {"reset", l_reset},   {"md5", l_md5},                 {"sha256", l_sha256},
         {"pinyin", l_pinyin}, {"index_clear", l_index_clear}, {"index_add", l_index_add},
         {"index_size", l_index_size}, {"index_search", l_index_search},
         {"config_path", l_config_path}, {"script_dir", l_script_dir}, {"web_port", l_web_port},
         {"listdir", l_listdir}, {"tool_remove", l_tool_remove}, {"version", l_version}, {"now_ms", l_now_ms},
+        {"save_start", l_save_start}, {"log_config", l_log_config}, {"log_tail", l_log_tail}, {"proc_reap", l_proc_reap}, {"dav_test", l_dav_test},
         {nullptr, nullptr},
     };
     lua_newtable(L_);
@@ -621,7 +753,7 @@ WebResponse Runtime::handle_http(const WebRequest& req) {
     if (lua_pcall(L_, 5, 1, 0) != 0) {
         resp.status = 500;
         resp.body = lua_tostring(L_, -1) ? lua_tostring(L_, -1) : "lua error";
-        std::fprintf(stderr, "on_http: %s\n", resp.body.c_str());
+        logf("on_http: %s", resp.body.c_str());
         lua_settop(L_, top);
         return resp;
     }
@@ -748,7 +880,7 @@ void Runtime::emit_step(const char* kind, const std::string& name, long long ms,
         lua_pushlstring(L_, error->data(), error->size());
         lua_setfield(L_, -2, "error");
     }
-    if (lua_pcall(L_, 1, 0, 0) != 0) std::fprintf(stderr, "on_step: %s\n", lua_tostring(L_, -1));
+    if (lua_pcall(L_, 1, 0, 0) != 0) logf("on_step: %s", lua_tostring(L_, -1));
     lua_settop(L_, top);
 }
 
@@ -793,7 +925,7 @@ bool Runtime::ask_impl(const std::string& text, std::string& reply, std::string&
             const json& fn = c.value("function", json::object());
             std::string name = fn.value("name", "");
             std::string args = fn.value("arguments", "{}");
-            std::fprintf(stderr, "[tool] %s %s\n", name.c_str(), args.c_str());
+            logf("[tool] %s %s", name.c_str(), args.c_str());
             long long t1 = now_ms();
             std::string out = run_tool(name, args);
             long long tool_ms = now_ms() - t1;

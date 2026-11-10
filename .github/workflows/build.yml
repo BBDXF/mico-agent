@@ -1,0 +1,60 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev python3
+      - name: Test
+        run: make test
+      - name: Dist (x86_64, for local trial)
+        run: make dist
+      - name: ABI report (informational)
+        run: tools/check_abi.sh build/mico-agent || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mico-agent-x86_64
+          path: build/mico-agent-*.tar.gz
+
+  armhf:
+    # Built inside debian:stretch via docker run (not `container:`), because
+    # node20-based actions cannot run on stretch's glibc 2.24.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Cross-build in debian:stretch + ABI check
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src debian:stretch sh tools/build_armhf.sh
+          sudo chown -R "$(id -u):$(id -g)" build-armhf
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mico-agent-armhf
+          path: build-armhf/mico-agent-*.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, armhf]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          generate_release_notes: true

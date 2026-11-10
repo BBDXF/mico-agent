@@ -1,0 +1,48 @@
+{
+  "llm": {
+    "base_url": "https://api.siliconflow.cn/v1",
+    "api_key": "",
+    "model": "Qwen/Qwen3-8B",
+    "extra": {
+      "enable_thinking": false
+    },
+    "timeout_ms": 60000
+  },
+  "agent": {
+    "system_prompt": "你是运行在小爱音箱上的语音助手。回答会被直接朗读，请用简短口语化的中文，不要使用 Markdown。用户的话来自语音识别，可能有同音字或错别字。点歌时先用 music_search 搜索（它能容忍识别错误），用户要求播放时，只要有一个结果明显最匹配就立即调用 music_play，不要征求确认；只有多个结果同样可能时才简短询问。曲库里外文歌手多用原名（如艾薇儿=Avril Lavigne），中文名搜不到时换原名再搜一次。本地曲库没有时可用 music_search_online 在线搜索。",
+    "max_steps": 8,
+    "max_history": 20
+  },
+  "fast_path": {
+    "enabled": true,
+    "min_score": 0.6,
+    "margin": 0.15
+  },
+  "index": {
+    "sync_on_start": true,
+    "sync_interval_min": 360,
+    "miss_resync_min": 10
+  },
+  "web": {
+    "listen": "0.0.0.0:8080",
+    "token": ""
+  },
+  "shell": {
+    "enabled": true
+  },
+  "plugins": {
+    "dir": "",
+    "enabled": {
+      "fnos": true,
+      "bili": true
+    }
+  },
+  "playback": {
+    "mode": "proxy",
+    "max_mb": 30,
+    "buffer_kb": 1024
+  },
+  "instruction_log": "/tmp/mico_aivs_lab/instruction.log",
+  "dry_run": false,
+  "poll_ms": 50
+}

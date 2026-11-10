@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mico Agent</title>
+<style>
+:root{--bg:#f4f6f9;--card:#fff;--fg:#1f2933;--mut:#6b7785;--line:#e3e8ee;--pri:#ff6900;--pri2:#e85d00;--ok:#1a9b5b;--err:#d93636;--blue:#2f6fed;--r:10px;--sans:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC","WenQuanYi Micro Hei",Roboto,"Helvetica Neue",Arial,sans-serif;--mono:ui-monospace,SFMono-Regular,"Cascadia Code",Consolas,"JetBrains Mono",Menlo,"Noto Sans Mono CJK SC",monospace}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:400 15px/1.65 var(--sans);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility;-webkit-text-size-adjust:100%;font-kerning:normal;letter-spacing:.01em}
+b,strong,th{font-weight:600}h1,h2,h3{line-height:1.35;letter-spacing:0}code{font-family:var(--mono);font-size:.9em;background:#f1f3f6;padding:1px 5px;border-radius:4px}button,input,select,textarea{font-family:inherit}
+header{background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+.hw{max-width:1000px;margin:auto;display:flex;align-items:center;gap:16px;padding:0 16px;flex-wrap:wrap}
+.logo{font-weight:700;font-size:17px;padding:12px 0}.logo b{color:var(--pri)}
+nav{display:flex;gap:2px;overflow-x:auto}nav a{padding:14px 14px;cursor:pointer;color:var(--mut);border-bottom:2px solid transparent;white-space:nowrap}
+nav a.on{color:var(--pri);border-color:var(--pri);font-weight:600}
+main{max-width:1000px;margin:auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:14px;box-shadow:0 1px 2px #0000000a}
+.card h3{margin:0 0 12px;font-size:15px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.kv{background:#fafbfc;border:1px solid var(--line);border-radius:8px;padding:10px 12px}.kv .k{color:var(--mut);font-size:12px}.kv .v{font-weight:600;word-break:break-all}
+.ver{background:linear-gradient(135deg,#ff6900,#ff9a3c);color:#fff;border:0}.ver h3{color:#fff}.ver .big{font-size:26px;font-weight:700}
+.ver .kv{background:#ffffff26;border-color:#ffffff40}.ver .kv .k{color:#ffe9d9}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--mut);font-weight:500;font-size:12px}
+.btn{border:1px solid var(--line);background:#fff;color:var(--fg);padding:7px 14px;border-radius:8px;cursor:pointer;font:inherit}
+.btn:hover{border-color:#c5ccd5}.btn.p{background:var(--pri);border-color:var(--pri);color:#fff}.btn.p:hover{background:var(--pri2)}
+.btn.d{color:var(--err)}.btn.s{padding:4px 10px;font-size:13px}.btn:disabled{opacity:.5;cursor:default}
+.badge{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;background:#eef1f5;color:var(--mut);margin-right:4px}
+.b-voice{background:#e8f0ff;color:var(--blue)}.b-web{background:#f1e9ff;color:#7a3fd1}.b-fast{background:#e5f7ee;color:var(--ok)}.b-llm{background:#fff1e6;color:var(--pri2)}
+.b-local{background:#e5f7ee;color:var(--ok)}.b-online{background:#e8f0ff;color:var(--blue)}.b-err{background:#fdeaea;color:var(--err)}
+.tg{position:relative;width:40px;height:22px;display:inline-block;flex:none}.tg input{opacity:0;width:0;height:0}
+.tg span{position:absolute;inset:0;background:#cfd6de;border-radius:99px;transition:.2s;cursor:pointer}
+.tg span:before{content:"";position:absolute;width:18px;height:18px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.2s;box-shadow:0 1px 2px #0003}
+.tg input:checked+span{background:var(--ok)}.tg input:checked+span:before{transform:translateX(18px)}
+label.f{display:block;margin-bottom:10px}label.f>div{color:var(--mut);font-size:12px;margin-bottom:3px}
+input[type=text],input[type=password],input[type=number],select,textarea{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font:inherit;background:#fff}
+input:focus,select:focus,textarea:focus{outline:2px solid #ff690033;border-color:var(--pri)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.sp{flex:1}
+.mono,textarea.mono{font:13px/1.55 var(--mono);letter-spacing:0}pre,.st pre{font-family:var(--mono)}
+.msg{padding:8px 12px;border-radius:8px;margin:8px 0;font-size:13px;white-space:pre-wrap}.msg.e{background:#fdeaea;color:var(--err)}.msg.o{background:#e5f7ee;color:var(--ok)}.msg.i{background:#fff6e5;color:#8a5a00}
+.mut{color:var(--mut)}.small{font-size:12px}
+#chat{max-height:calc(100vh - 260px);min-height:300px;overflow-y:auto;padding:4px}
+.turn{margin-bottom:18px}.bub{max-width:80%;padding:9px 13px;border-radius:14px;white-space:pre-wrap;word-break:break-word}
+.u{display:flex;justify-content:flex-end}.u .bub{background:var(--pri);color:#fff;border-bottom-right-radius:4px}
+.a .bub{background:#fff;border:1px solid var(--line);border-bottom-left-radius:4px}.a .bub.err{border-color:#f3b4b4;background:#fdeaea;color:var(--err)}
+.meta{font-size:12px;color:var(--mut);margin:4px 2px}.u+.meta{text-align:right}
+details.tl{margin:4px 0 0 2px;font-size:13px}details.tl summary{cursor:pointer;color:var(--mut);font-size:12px}
+.st{display:flex;gap:8px;padding:5px 0 5px 10px;border-left:2px solid var(--line);margin-left:6px}
+.st .ic{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:12px;flex:none;background:#eef1f5;margin-left:-22px}
+.st.e .ic{background:#fdeaea}.st pre{margin:2px 0 0;background:#f6f8fa;padding:6px 8px;border-radius:6px;max-height:160px;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:12px}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid #ccc;border-top-color:var(--pri);border-radius:50%;animation:sp .8s linear infinite;vertical-align:-2px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.ed{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;height:60vh;background:#fbfcfd}
+.ed .gut{padding:8px 6px;text-align:right;color:#a0a9b4;background:#f1f3f6;user-select:none;overflow:hidden;min-width:40px;white-space:pre}
+.ed textarea{border:0;border-radius:0;resize:none;flex:1;padding:8px;white-space:pre;overflow:auto;height:100%;tab-size:2;background:transparent}
+.ed textarea:focus{outline:0}
+.modal{position:fixed;inset:0;background:#0006;display:flex;align-items:center;justify-content:center;z-index:20;padding:12px}
+.modal .card{width:min(900px,100%);max-height:96vh;overflow:auto;margin:0}
+.pl{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--line)}.pl:last-child{border:0}
+.tabs2{display:flex;gap:6px;margin-bottom:10px}.tabs2 .btn.on{border-color:var(--pri);color:var(--pri)}
+.fld{padding:12px 0;border-top:1px solid var(--line)}.card>h3+.fld{border-top:0;padding-top:0}
+.fld .fh{gap:6px;margin-bottom:2px}.fld .fhelp{margin-bottom:6px}.fld textarea{resize:vertical;min-height:120px}
+.fld.chg{box-shadow:inset 3px 0 0 var(--pri);padding-left:10px;margin-left:-10px}.fld.bad input,.fld.bad textarea,.fld.bad select{border-color:var(--err)}
+.b-mod{background:#fff1e6;color:var(--pri2)}.b-chg{background:var(--pri);color:#fff}.b-rs{background:#e8f0ff;color:var(--blue)}
+.cfg-top{position:sticky;top:50px;z-index:3}#cfgDirty.warn{color:var(--pri2);font-weight:600}
+details.adv summary{cursor:pointer}details.adv[open] summary{margin-bottom:8px}
+.tl-card{padding:14px 0;border-bottom:1px solid var(--line)}.tl-card:last-child{border:0}.tl-card.off{opacity:.62}
+.tl-name{font:600 14px var(--mono);letter-spacing:0}.b-cus{background:#f1e9ff;color:#7a3fd1}
+.tl-desc{white-space:pre-wrap;word-break:break-word;margin:6px 0 6px -6px;cursor:text;border-radius:6px;padding:4px 6px}.tl-desc:hover{background:#f6f8fa}
+.prm{display:inline-block;font:12px var(--mono);background:#f6f8fa;border:1px solid var(--line);border-radius:6px;padding:0 6px;margin:2px 4px 2px 0}.prm i{color:var(--mut);font-style:normal}.prm.req b{color:var(--pri2)}
+.stats{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mut)}.stats b{color:var(--fg);font-weight:600}
+pre.res{background:#f6f8fa;border:1px solid var(--line);border-radius:8px;padding:10px;max-height:40vh;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:12.5px;margin:6px 0}
+.hide{display:none!important}
+@media(max-width:600px){main{padding:10px}.bub{max-width:92%}.card{padding:12px}nav a{padding:12px 10px}}
+</style></head><body>
+<header><div class="hw"><div class="logo"><b>Mico</b> Agent</div><nav id="nav">
+<a data-t="status">状态</a><a data-t="conv">对话</a><a data-t="config">配置</a><a data-t="tools">工具</a><a data-t="plugins">插件</a></nav></div></header>
+<main>
+<section id="t-status"></section>
+<section id="t-conv" class="hide"><div class="card"><div id="chat"></div>
+<div class="row" style="margin-top:10px"><input type="text" id="askIn" class="sp" placeholder="输入测试消息，回车发送（例如：播放周杰伦的歌）"><button class="btn p" id="askBtn">发送</button></div>
+<div id="askMsg"></div></div></section>
+<section id="t-config" class="hide"></section>
+<section id="t-tools" class="hide"></section>
+<section id="t-plugins" class="hide"></section>
+</main>
+<div id="modal" class="modal hide"><div class="card" id="mbody"></div></div>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let token=localStorage.getItem('mico_token')||'';
+async function api(path,opt={}){
+  const h=Object.assign({},opt.headers||{});
+  if(opt.body!==undefined&&typeof opt.body!=='string'){opt.body=JSON.stringify(opt.body);h['Content-Type']='application/json'}
+  if(token)h.Authorization='Bearer '+token;
+  const r=await fetch(path,Object.assign({},opt,{headers:h}));
+  if(r.status===401){
+    const t=prompt('需要访问令牌（web.token）：',token);
+    if(t!==null){token=t.trim();localStorage.setItem('mico_token',token);return api(path,opt)}
+    throw new Error('未授权');
+  }
+  let d=null;const tx=await r.text();try{d=tx?JSON.parse(tx):null}catch(e){d=tx}
+  if(!r.ok){const e=new Error((d&&d.error)||(typeof d==='string'&&d)||('HTTP '+r.status));e.status=r.status;e.data=d;throw e}
+  return d;
+}
+function fmtDur(s){s=Math.floor(s||0);const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return (d?d+'天 ':'')+(h?h+'小时 ':'')+m+'分 '+(s%60)+'秒'}
+function fmtMs(ms){return ms==null?'':ms<1000?ms+'ms':(ms/1000).toFixed(1)+'s'}
+function fmtTime(t){if(!t)return'';const d=new Date(typeof t==='number'?(t<1e12?t*1000:t):t);return isNaN(d)?esc(t):d.toLocaleString('zh-CN',{hour12:false})}
+function kv(k,v){return `<div class="kv"><div class="k">${k}</div><div class="v">${v==null||v===''?'<span class="mut">—</span>':esc(v)}</div></div>`}
+
+/* tabs */
+let cur='';const loaders={status:loadStatus,conv:startConv,config:loadConfig,plugins:loadPlugins,tools:loadTools};
+function show(t){cur=t;location.hash=t;document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('on',a.dataset.t===t));
+  document.querySelectorAll('main>section').forEach(s=>s.classList.toggle('hide',s.id!=='t-'+t));loaders[t]()}
+$('#nav').onclick=e=>{if(e.target.dataset.t)show(e.target.dataset.t)};
+
+/* status */
+const REPO_URL='https://github.com/BBDXF/mico-agent';
+const GH_SVG='<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true" style="vertical-align:-3px;margin-right:4px"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>';
+function aboutCard(v){
+  const a=(u,t)=>`<a href="${u}" target="_blank" rel="noopener noreferrer">${t}</a>`;
+  return `<div class="card"><h3>关于</h3><div><b>mico-agent</b> <span class="mut small mono">${esc(v.app||'')}${v.git?' · '+esc(v.git):''}</span></div>
+  <p class="mut" style="margin:6px 0 10px">运行在小爱音箱里的轻量 AI Agent（C++ + Lua）</p>
+  <div class="row" style="gap:16px;flex-wrap:wrap">${a(REPO_URL,GH_SVG+'GitHub')}${a(REPO_URL+'/issues','问题反馈')}${a(REPO_URL+'/releases','发布版本')}</div></div>`;
+}
+async function loadStatus(){
+  const el=$('#t-status');
+  try{const s=await api('/api/status');const v=s.version||{},p=s.playback||{};
+    el.innerHTML=`<div class="card ver"><h3>版本信息</h3><div class="big">${esc(v.app||'未知版本')}</div>
+    <div class="grid" style="margin-top:12px">${kv('Git',v.git)}${kv('构建时间',v.build_time)}${kv('Lua',v.lua)}${kv('curl',v.curl)}${kv('编译器',v.compiler)}</div></div>
+    <div class="card"><div class="row"><h3 class="sp" style="margin:0">运行状态</h3><button class="btn s" onclick="loadStatus()">刷新</button></div>
+    <div class="grid" style="margin-top:12px">${kv('启动时间',s.started?fmtTime(s.started):'')}${kv('已运行',fmtDur(s.uptime))}${kv('Web 端口',s.web_port)}
+    ${kv('配置文件',s.config_path)}${kv('索引大小',s.index_size)}${kv('对话数',s.conversations)}${kv('正在播放',s.now_playing||'无')}</div></div>
+    ${indexCard(s)}
+    <div class="card"><h3>播放</h3><div class="grid">${kv('模式',p.mode==='download'?'下载后播放 (download)':p.mode==='proxy'?'边下边播 (proxy)':p.mode)}${kv('缓冲',p.buffer_kb!=null?p.buffer_kb+' KB':'')}${kv('最大下载',p.max_mb!=null?p.max_mb+' MB':'')}</div></div>
+    <div class="card"><h3>已加载插件</h3>${(s.plugins||[]).map(n=>`<span class="badge">${esc(typeof n==='string'?n:n.name)}</span>`).join('')||'<span class="mut">无</span>'}</div>
+    ${aboutCard(v)}`;
+  }catch(e){el.innerHTML=`<div class="msg e">加载失败：${esc(e.message)}</div>`}
+}
+let idxSyncing=false;
+function indexCard(s){const x=s.index||{};const busy=idxSyncing||!!x.syncing;
+  const n=x.tracks!=null?x.tracks:s.index_size;
+  const last=x.last_sync_time?x.last_sync_time+(x.last_sync_ms!=null?`（耗时 ${fmtMs(x.last_sync_ms)}）`:''):'';
+  return `<div class="card"><div class="row"><h3 class="sp" style="margin:0">曲库索引</h3>
+  <button class="btn s p" id="idxBtn" onclick="syncIndex()" ${busy?'disabled':''}>${busy?'<span class="spin"></span> 同步中…':'立即同步'}</button></div>
+  <div class="grid" style="margin-top:12px">${kv('歌曲数',n!=null?n+' 首':'')}${kv('上次同步',last||(s.index?'尚未同步':''))}${kv('下次自动同步',x.next_sync_time||'')}</div>
+  ${x.last_error?`<div class="msg e">上次同步出错：${esc(x.last_error)}</div>`:''}<div id="idxMsg"></div></div>`}
+async function syncIndex(){if(idxSyncing)return;idxSyncing=true;const b=$('#idxBtn');
+  if(b){b.disabled=true;b.innerHTML='<span class="spin"></span> 同步中…'}
+  let msg='';try{const r=await api('/api/index/sync',{method:'POST'})||{};
+    const n=r.tracks;msg=r.last_error?`<div class="msg e">同步失败：${esc(r.last_error)}</div>`:`<div class="msg o">同步完成${n!=null?`，共 ${esc(n)} 首`:''}</div>`}
+  catch(e){msg=`<div class="msg e">同步失败：${esc(e.message)}</div>`}
+  idxSyncing=false;if(cur==='status'){await loadStatus();const m=$('#idxMsg');if(m)m.innerHTML=msg}}
+
+/* conversations */
+let since=0,convTimer=null;const turns=new Map();
+const ICON={tool:'🔧',llm:'🧠',play:'🎵',tts:'🔊',info:'ℹ️'},KN={tool:'工具',llm:'模型',play:'播放',tts:'语音',info:'信息'};
+function pretty(x){if(x==null)return'';if(typeof x==='string'){try{x=JSON.parse(x)}catch(e){return x}}return JSON.stringify(x,null,2)}
+function turnHTML(t){
+  const steps=t.steps||[],run=t.status==='running';
+  const tl=steps.length?`<details class="tl"${run?' open':''}><summary>执行过程（${steps.length} 步）</summary>${steps.map(s=>`<div class="st${s.error?' e':''}"><div class="ic">${s.error?'❌':ICON[s.kind]||'•'}</div><div style="flex:1;min-width:0">
+   <b>${esc(KN[s.kind]||s.kind)}</b> ${esc(s.name||'')} <span class="mut small">${fmtMs(s.ms)}</span>
+   ${s.args!=null?`<pre>参数: ${esc(pretty(s.args))}</pre>`:''}${s.result!=null?`<pre>结果: ${esc(pretty(s.result))}</pre>`:''}${s.error?`<div class="msg e">${esc(s.error)}</div>`:''}</div></div>`).join('')}</details>`:'';
+  const reply=run?`<span class="spin"></span> 处理中…`:t.error?'⚠ '+esc(t.error)+(t.reply?'\n'+esc(t.reply):''):esc(t.reply||'（无回复）');
+  return `<div class="u"><div class="bub">${esc(t.user)}</div></div>
+  <div class="meta"><span class="badge b-${esc(t.source)}">${t.source==='voice'?'🎤 语音':'⌨ 网页'}</span>${fmtTime(t.time)}</div>
+  <div class="a"><div class="bub${t.error?' err':''}">${reply}</div></div>
+  <div class="meta">${t.route?`<span class="badge b-${esc(t.route)}">${t.route==='fast'?'⚡ 快速匹配':'🧠 大模型'}</span>`:''}${t.duration_ms!=null&&!run?`<span class="badge">⏱ ${fmtMs(t.duration_ms)}</span>`:''}</div>${tl}`;
+}
+async function pollConv(){
+  try{const r=await api('/api/conversations?since='+since)||[];const list=(Array.isArray(r)?r:(r.conversations||[])).slice().sort((a,b)=>a.id-b.id);const chat=$('#chat');
+    const atBottom=chat.scrollHeight-chat.scrollTop-chat.clientHeight<60;
+    if(!turns.size&&!list.length&&!chat.innerHTML)chat.innerHTML='<p class="mut" id="empty">暂无对话。对小爱说话或在下方发送测试消息。</p>';
+    for(const t of list){$('#empty')&&$('#empty').remove();let el=turns.get(t.id);
+      if(!el){el=document.createElement('div');el.className='turn';chat.appendChild(el);turns.set(t.id,el)}
+      const op=el.querySelector('details[open]');el.innerHTML=turnHTML(t);if(op){const d=el.querySelector('details');d&&(d.open=true)}
+      if(t.status!=='running'&&t.id>since)since=t.id}
+    // keep polling from earliest running turn
+    const running=list.filter(t=>t.status==='running').map(t=>t.id);if(running.length)since=Math.min(...running)-1;
+    if(list.length&&atBottom)chat.scrollTop=chat.scrollHeight;
+  }catch(e){}
+}
+function startConv(){pollConv();if(!convTimer)convTimer=setInterval(()=>{if(cur==='conv')pollConv()},2000);setTimeout(()=>{const c=$('#chat');c.scrollTop=c.scrollHeight},300)}
+async function ask(){const i=$('#askIn'),b=$('#askBtn'),tx=i.value.trim();if(!tx)return;b.disabled=true;$('#askMsg').innerHTML='';
+  try{await api('/api/ask',{method:'POST',body:{text:tx}});i.value='';pollConv()}catch(e){$('#askMsg').innerHTML=`<div class="msg e">${esc(e.message)}</div>`}
+  b.disabled=false;i.focus()}
+$('#askBtn').onclick=ask;$('#askIn').onkeydown=e=>{if(e.key==='Enter'&&!e.isComposing)ask()};
+
+/* config: schema-driven */
+const GRP={llm:'大模型',agent:'智能体',fast:'快速点歌',playback:'播放',web:'网页'},GORD=['llm','agent','fast','playback','web'];
+const getP=(o,k)=>k.split('.').reduce((a,x)=>a==null?undefined:a[x],o);
+function setP(o,k,v){const ps=k.split('.');let c=o;ps.slice(0,-1).forEach(x=>{if(c[x]==null||typeof c[x]!=='object')c[x]={};c=c[x]});c[ps[ps.length-1]]=v}
+const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+const fmtV=v=>v==null||v===''?'（空）':typeof v==='boolean'?(v?'开启':'关闭'):typeof v==='object'?JSON.stringify(v):String(v);
+let CS=null;
+async function loadConfig(){const el=$('#t-config');let r;
+  try{r=await api('/api/config')||{}}catch(e){el.innerHTML=`<div class="msg e">加载失败：${esc(e.message)}</div>`;return}
+  if(!Array.isArray(r.schema)||!r.schema.length)return legacyConfig(el,r.config||r);
+  CS={cfg:r.config||{},def:r.defaults||{},eff:r.effective||{},env:new Set(r.env_overrides||[]),schema:r.schema};
+  const groups={};for(const f of r.schema){const g=f.key.split('.')[0];(groups[GRP[g]?g:'_']=groups[GRP[g]?g:'_']||[]).push(f)}
+  const order=[...GORD.filter(g=>groups[g]),...Object.keys(groups).filter(g=>!GORD.includes(g))];
+  el.innerHTML=`<div class="card cfg-top"><div class="row"><div class="sp"><b>配置文件</b> <span class="mut small mono">${esc(r.path||'')}</span></div>
+    <span class="mut small" id="cfgDirty">没有未保存的修改</span><button class="btn" id="cfgReset" disabled>撤销修改</button><button class="btn p" id="cfgSave" disabled>保存</button></div><div id="cfgMsg"></div></div>`+
+   order.map(g=>`<div class="card"><h3>${GRP[g]||'其他'} <span class="mut small mono">${g==='_'?'':esc(g)}</span></h3>${groups[g].map(fieldHTML).join('')}</div>`).join('')+
+   `<details class="card adv"><summary><b>高级：直接编辑 JSON</b> <span class="mut small">适合修改上面没有列出的配置项</span></summary>
+    <p class="mut small">这里是配置文件的原始内容，保存时整个替换。密钥显示为 ****** 时保持不变即不会修改。</p>
+    <textarea class="mono" id="cfgRaw" rows="16" spellcheck="false"></textarea><div class="row" style="margin-top:8px"><span class="sp"></span><button class="btn p" id="cfgRawSave">保存 JSON</button></div><div id="cfgRawMsg"></div></details>`;
+  $('#cfgRaw').value=JSON.stringify(CS.cfg,null,2);
+  el.querySelectorAll('[data-k]').forEach(i=>{i.oninput=i.onchange=()=>{fieldState(i.dataset.k);dirty()}});
+  el.querySelectorAll('[data-rst]').forEach(b=>b.onclick=()=>{const k=b.dataset.rst;CS.reset=CS.reset||new Set();CS.reset.add(k);setInput(k,getP(CS.def,k));fieldState(k);dirty()});
+  $('#cfgReset').onclick=loadConfig;$('#cfgSave').onclick=saveSchema;
+  $('#cfgRawSave').onclick=()=>{let o;try{o=JSON.parse($('#cfgRaw').value)}catch(e){$('#cfgRawMsg').innerHTML=`<div class="msg e">JSON 格式错误：${esc(e.message)}</div>`;return}saveCfg(o,'#cfgRawMsg')};
+  CS.reset=new Set();CS.schema.forEach(f=>fieldState(f.key));
+}
+const fid=k=>'cf-'+k.replace(/\./g,'-');
+function curVal(f){const v=getP(CS.cfg,f.key);return v===undefined?getP(CS.def,f.key):v}
+function fieldHTML(f){const k=f.key,id=fid(k),v=curVal(f),d=getP(CS.def,k),a=`id="${id}" data-k="${esc(k)}"`;let inp;
+  const ph=d==null||d===''?'':`默认：${f.type==='secret'?'（空）':fmtV(d)}`;
+  if(f.type==='bool')inp=`<label class="row" style="gap:10px"><span class="tg"><input type="checkbox" ${a}${v?' checked':''}><span></span></span><span class="mut small">默认：${fmtV(!!d)}</span></label>`;
+  else if(f.type==='enum')inp=`<select ${a}>${(f.options||[]).map(o=>{const ov=typeof o==='object'?o.value:o,ol=typeof o==='object'?(o.label||o.value):o;return `<option value="${esc(ov)}"${ov===v?' selected':''}>${esc(ol)}${ov===d?'（默认）':''}</option>`}).join('')}</select>`;
+  else if(f.type==='json')inp=`<textarea class="mono" ${a} rows="4" spellcheck="false" placeholder="${esc(ph)}">${esc(v==null?'':JSON.stringify(v,null,2))}</textarea>`;
+  else if(f.type==='text')inp=`<textarea ${a} rows="7" placeholder="${esc(ph)}">${esc(v==null?'':v)}</textarea>`;
+  else if(f.type==='number')inp=`<input type="number" ${a} value="${esc(v==null?'':v)}"${f.min!=null?` min="${f.min}"`:''}${f.max!=null?` max="${f.max}"`:''} placeholder="${esc(ph)}">`;
+  else if(f.type==='secret')inp=`<input type="password" ${a} value="${esc(v==null?'':v)}" autocomplete="new-password" placeholder="未设置">`;
+  else inp=`<input type="text" ${a} value="${esc(v==null?'':v)}" placeholder="${esc(ph)}">`;
+  const rng=f.type==='number'&&(f.min!=null||f.max!=null)?`范围 ${f.min??'…'}–${f.max??'…'}`:'';
+  return `<div class="fld" id="w-${id}"><div class="row fh"><b>${esc(f.label||k)}</b><span class="mut small mono">${esc(k)}</span>
+    ${f.restart?'<span class="badge b-rs" title="修改后需要重启程序才会生效">需重启</span>':''}<span class="badge b-mod hide">已修改</span><span class="badge b-chg hide">未保存</span><span class="sp"></span>
+    <button class="btn s hide" data-rst="${esc(k)}">恢复默认</button></div>
+    ${f.help||rng?`<div class="mut small fhelp">${esc(f.help||'')}${f.help&&rng?' · ':''}${rng}</div>`:''}${inp}
+    ${CS.env.has(k)?`<div class="msg i">⚠ 由环境变量覆盖，当前生效值：<b class="mono">${esc(f.type==='secret'?'******':fmtV(getP(CS.eff,k)))}</b>（这里的修改在去掉环境变量前不会生效）</div>`:''}
+    <div class="ferr"></div></div>`}
+function readInput(f){const e=document.getElementById(fid(f.key));if(!e)return undefined;
+  if(f.type==='bool')return e.checked;if(f.type==='json'){const t=e.value.trim();if(t==='')return null;try{return JSON.parse(t)}catch(_){return t}}if(f.type==='number')return e.value===''?null:Number(e.value);return e.value}
+function setInput(k,v){const e=document.getElementById(fid(k));if(!e)return;if(e.type==='checkbox')e.checked=!!v;else e.value=v==null?'':(typeof v==='object'?JSON.stringify(v,null,2):v)}
+function changes(){const out=[];for(const f of CS.schema){const k=f.key,nv=readInput(f);if(nv===undefined)continue;
+  const ov=curVal(f),had=getP(CS.cfg,k)!==undefined;
+  if(CS.reset.has(k)&&had&&same(nv,getP(CS.def,k))){out.push([k,null]);continue}
+  if(f.type==='secret'&&nv==='******')continue;
+  if(!same(nv??'',ov??''))out.push([k,nv===''&&f.type!=='text'&&f.type!=='string'&&f.type!=='secret'?null:nv])}
+  return out}
+function fieldState(k){const f=CS.schema.find(x=>x.key===k),w=document.getElementById('w-'+fid(k));if(!f||!w)return;
+  const nv=readInput(f),d=getP(CS.def,k),had=getP(CS.cfg,k)!==undefined;
+  const pending=CS.reset.has(k)&&had&&same(nv,d)?true:f.type==='secret'&&nv==='******'?false:!same(nv??'',curVal(f)??'');
+  const mod=f.type==='secret'?(nv!==''&&nv!=null&&!same(nv,d)):!same(nv??'',d??'')&&!(CS.reset.has(k)&&same(nv,d));
+  w.querySelector('.b-mod').classList.toggle('hide',!mod);w.querySelector('.b-chg').classList.toggle('hide',!pending);
+  w.querySelector('[data-rst]').classList.toggle('hide',!mod);w.classList.toggle('chg',pending);
+  w.querySelector('.ferr').innerHTML='';w.classList.remove('bad')}
+function dirty(){const n=changes().length;$('#cfgSave').disabled=$('#cfgReset').disabled=!n;$('#cfgDirty').textContent=n?`${n} 项未保存`:'没有未保存的修改';$('#cfgDirty').classList.toggle('warn',!!n)}
+async function saveSchema(){const ch=changes();if(!ch.length)return;const body={};ch.forEach(([k,v])=>setP(body,k,v));
+  const b=$('#cfgSave');b.disabled=true;$('#cfgMsg').innerHTML='';
+  try{await api('/api/config',{method:'PUT',body});
+    const rs=ch.some(([k])=>(CS.schema.find(f=>f.key===k)||{}).restart);
+    $('#cfgMsg').innerHTML=`<div class="msg o">已保存 ${ch.length} 项 ✓${rs?'\n其中部分设置需要重启程序才会生效。':''}</div>`;setTimeout(loadConfig,1500)}
+  catch(e){const k=e.data&&e.data.key,w=k&&document.getElementById('w-'+fid(k));
+    if(w){w.classList.add('bad');w.querySelector('.ferr').innerHTML=`<div class="msg e">${esc(e.message)}</div>`;w.scrollIntoView({behavior:'smooth',block:'center'});
+      $('#cfgMsg').innerHTML=`<div class="msg e">保存失败：“${esc((CS.schema.find(f=>f.key===k)||{}).label||k)}”有误，请看下方提示</div>`}
+    else $('#cfgMsg').innerHTML=`<div class="msg e">保存失败：${esc(e.message)}</div>`;b.disabled=false}}
+
+/* config: legacy fallback (no schema) */
+let cfg={};
+const F=[['llm','大模型',[['base_url','接口地址 (base_url)','text'],['api_key','API Key','password'],['model','模型名称','text']]],
+ ['web','网页',[['listen','监听地址 (如 0.0.0.0:8080)','text'],['token','访问令牌（留空则不需要）','password']]],
+ ['shell','Shell',[['enabled','允许执行 shell 命令','bool']]],
+ ['playback','播放',[['mode','播放模式','sel'],['buffer_kb','缓冲大小 KB（64–8192）','num'],['max_mb','下载模式最大文件 MB','num']]]];
+function legacyConfig(el,c){cfg=c||{};
+  el.innerHTML=F.map(([sec,title,fs])=>`<div class="card"><h3>${title} <span class="mut small mono">${sec}</span></h3>${fs.map(([k,l,t])=>{
+    const v=(cfg[sec]||{})[k],id=`c-${sec}-${k}`;
+    if(t==='bool')return `<label class="f row"><span class="tg"><input type="checkbox" id="${id}"${v?' checked':''}><span></span></span>${l}</label>`;
+    if(t==='sel')return `<label class="f"><div>${l}</div><select id="${id}"><option value="proxy"${v==='proxy'?' selected':''}>proxy — 边下边播（省空间）</option><option value="download"${v==='download'?' selected':''}>download — 先下载再播（更稳定）</option></select></label>`;
+    return `<label class="f"><div>${l}</div><input type="${t==='num'?'number':t}" id="${id}" value="${esc(v==null?'':v)}"${t==='num'&&k==='buffer_kb'?' min="64" max="8192"':''}${t==='password'?' placeholder="未设置"':''}></label>`}).join('')}</div>`).join('')+
+  `<div class="card"><div class="row"><button class="btn p" id="cfgSave">保存配置</button><span class="mut small">密钥显示为 ****** 时保持不变即不会修改</span></div><div id="cfgMsg"></div></div>
+  <div class="card"><h3>原始 JSON（高级）</h3><p class="mut small">可编辑上面未列出的其它配置项。保存时以此为准，上方表单的修改会先合并进来。</p>
+  <textarea class="mono" id="cfgRaw" rows="16" spellcheck="false"></textarea><div class="row" style="margin-top:8px"><button class="btn" id="cfgSync">从表单同步</button><button class="btn p" id="cfgRawSave">保存 JSON</button></div><div id="cfgRawMsg"></div></div>`;
+  $('#cfgRaw').value=JSON.stringify(cfg,null,2);
+  $('#cfgSave').onclick=()=>saveCfg(formCfg(cfg),'#cfgMsg');
+  $('#cfgSync').onclick=()=>{try{$('#cfgRaw').value=JSON.stringify(formCfg(JSON.parse($('#cfgRaw').value)),null,2)}catch(e){$('#cfgRawMsg').innerHTML=`<div class="msg e">JSON 格式错误：${esc(e.message)}</div>`}};
+  $('#cfgRawSave').onclick=()=>{let o;try{o=JSON.parse($('#cfgRaw').value)}catch(e){$('#cfgRawMsg').innerHTML=`<div class="msg e">JSON 格式错误：${esc(e.message)}</div>`;return}saveCfg(o,'#cfgRawMsg')};
+}
+function formCfg(base){const o=JSON.parse(JSON.stringify(base||{}));
+  for(const [sec,,fs] of F){o[sec]=o[sec]||{};for(const [k,,t] of fs){const e=$(`#c-${sec}-${k}`);if(!e)continue;
+    if(t==='bool')o[sec][k]=e.checked;else if(t==='num'){if(e.value!=='')o[sec][k]=Number(e.value)}else o[sec][k]=e.value}}
+  return o}
+async function saveCfg(o,m){const b=o.playback&&o.playback.buffer_kb;
+  if(b!=null&&(b<64||b>8192)){$(m).innerHTML='<div class="msg e">缓冲大小需在 64–8192 KB 之间</div>';return}
+  try{await api('/api/config',{method:'PUT',body:o});$(m).innerHTML='<div class="msg o">已保存 ✓（部分设置可能需要重启生效）</div>';
+    setTimeout(loadConfig,1200)}catch(e){$(m).innerHTML=`<div class="msg e">保存失败：${esc(e.message)}</div>`}}
+
+/* plugins */
+async function loadPlugins(){const el=$('#t-plugins');let ps;
+  try{ps=await api('/api/plugins')||[]}catch(e){el.innerHTML=`<div class="msg e">加载失败：${esc(e.message)}</div>`;return}
+  el.innerHTML=`<div class="card"><div class="row"><h3 class="sp" style="margin:0">插件（${ps.length}）</h3><button class="btn p" onclick="addPlugin()">＋ 添加插件</button></div>
+  <p class="mut small">本地源：搜索/播放设备或局域网中的音乐；在线源：从网络服务获取音乐。插件配置写在源码中的 <code>M.config</code> 表里，点“编辑”修改。</p>
+  ${ps.map(p=>`<div class="pl"><label class="tg" title="${p.enabled?'点击禁用':'点击启用'}"><input type="checkbox" ${p.enabled?'checked':''} onchange="togglePl('${esc(p.name)}',this)"><span></span></label>
+   <div class="sp" style="min-width:0"><div><b>${esc(p.name)}</b> <span class="mut small">${esc(p.version||'')}</span>
+   <span class="badge b-${p.type==='online'?'online':'local'}">${p.type==='online'?'在线源':'本地源'}</span>${p.builtin?'<span class="badge">内置</span>':''}${p.error?'<span class="badge b-err">加载错误</span>':''}</div>
+   <div class="mut small">${esc(p.description||'')}</div><div class="mut small mono">${esc(p.file||'')}</div>${p.error?`<div class="msg e">${esc(p.error)}</div>`:''}</div>
+   <div class="row"><button class="btn s" onclick="editPl('${esc(p.name)}')">编辑</button>${p.builtin?'':`<button class="btn s d" onclick="delPl('${esc(p.name)}')">删除</button>`}</div></div>`).join('')||'<p class="mut">暂无插件</p>'}</div>`;
+}
+async function togglePl(n,cb){cb.disabled=true;try{await api(`/api/plugins/${encodeURIComponent(n)}/${cb.checked?'enable':'disable'}`,{method:'POST'})}catch(e){cb.checked=!cb.checked;alert('操作失败：'+e.message)}cb.disabled=false;loadPlugins()}
+async function delPl(n){if(!confirm(`确定删除插件 “${n}”？此操作不可恢复。`))return;try{await api('/api/plugins/'+encodeURIComponent(n),{method:'DELETE'});loadPlugins()}catch(e){alert('删除失败：'+e.message)}}
+function openModal(h){$('#mbody').innerHTML=h;$('#modal').classList.remove('hide')}
+function closeModal(){$('#modal').classList.add('hide');$('#mbody').innerHTML=''}
+const KIND={plugins:{api:'/api/plugins',tpl:'/api/plugin-template',label:'插件',reload:()=>loadPlugins()},tools:{api:'/api/tools',tpl:'/api/tool-template',label:'工具',reload:()=>loadTools()}};
+const editorHTML=`<div class="ed"><div class="gut mono" id="gut">1</div><textarea class="mono" id="src" spellcheck="false" wrap="off"></textarea></div>`;
+function initEditor(v){const ta=$('#src'),g=$('#gut');ta.value=v||'';
+  const upd=()=>{const n=ta.value.split('\n').length;let s='';for(let i=1;i<=n;i++)s+=i+'\n';g.textContent=s;g.scrollTop=ta.scrollTop};
+  ta.oninput=upd;ta.onscroll=()=>g.scrollTop=ta.scrollTop;
+  ta.onkeydown=e=>{if(e.key==='Tab'){e.preventDefault();const a=ta.selectionStart,b=ta.selectionEnd;ta.setRangeText('  ',a,b,'end');upd()}
+    if((e.ctrlKey||e.metaKey)&&e.key==='s'){e.preventDefault();const s=$('#edSave');s&&s.click()}};upd()}
+async function editPl(n,k='plugins'){const K=KIND[k];openModal(`<div class="row"><h3 class="sp" style="margin:0">编辑${K.label}：${esc(n)}</h3><button class="btn s" onclick="closeModal()">✕</button></div>
+  ${k==='plugins'?'<div class="msg i">提示：插件配置（如服务器地址、账号）在源码中的 <code>M.config</code> 表里，按注释修改即可。Ctrl+S 保存。</div>':'<div class="msg i">Ctrl+S 保存。保存后工具会重新加载。</div>'}${editorHTML}
+  <div id="edMsg"></div><div class="row" style="margin-top:10px"><span class="sp"></span><button class="btn" onclick="closeModal()">取消</button><button class="btn p" id="edSave">保存</button></div>`);
+  initEditor('加载中…');try{const r=await api(`${K.api}/${encodeURIComponent(n)}/source`);initEditor(typeof r==='string'?r:r.source)}catch(e){$('#edMsg').innerHTML=`<div class="msg e">${esc(e.message)}</div>`}
+  $('#edSave').onclick=async()=>{const b=$('#edSave');b.disabled=true;try{await api(`${K.api}/${encodeURIComponent(n)}/source`,{method:'PUT',body:{source:$('#src').value}});closeModal();K.reload()}
+    catch(e){$('#edMsg').innerHTML=`<div class="msg e">保存失败：${esc(e.message)}</div>`}b.disabled=false}}
+function addPlugin(k='plugins'){const K=KIND[k];openModal(`<div class="row"><h3 class="sp" style="margin:0">添加${K.label}</h3><button class="btn s" onclick="closeModal()">✕</button></div>
+  <div class="tabs2"><button class="btn on" data-m="paste">粘贴 / 新建</button><button class="btn" data-m="file">上传文件</button><button class="btn" data-m="url">从网址</button></div>
+  <div id="m-paste"><div class="row" style="margin-bottom:8px"><button class="btn s" id="tplBtn">载入模板</button><span class="mut small">${k==='plugins'?'从模板开始，修改 name、type 和 M.config 等':'从模板开始，修改工具名称、描述、参数和执行逻辑'}</span></div>${editorHTML}</div>
+  <div id="m-file" class="hide"><input type="file" id="upf" accept=".lua,text/plain"><p class="mut small">选择文件后内容会载入“粘贴 / 新建”编辑器，确认后再添加。</p></div>
+  <div id="m-url" class="hide"><label class="f"><div>${K.label}地址（原始文件 URL）</div><input type="text" id="upu" placeholder="https://…/plugin.lua"></label></div>
+  <div id="addMsg"></div><div class="row" style="margin-top:10px"><span class="sp"></span><button class="btn" onclick="closeModal()">取消</button><button class="btn p" id="edSave">添加</button></div>`);
+  initEditor('');let mode='paste';
+  document.querySelectorAll('.tabs2 .btn').forEach(b=>b.onclick=()=>{mode=b.dataset.m;document.querySelectorAll('.tabs2 .btn').forEach(x=>x.classList.toggle('on',x===b));
+    ['paste','file','url'].forEach(m=>$('#m-'+m).classList.toggle('hide',m!==mode))});
+  $('#tplBtn').onclick=async()=>{if($('#src').value.trim()&&!confirm('覆盖当前内容？'))return;try{const r=await api(K.tpl);initEditor(r.source)}catch(e){$('#addMsg').innerHTML=`<div class="msg e">${esc(e.message)}</div>`}};
+  $('#upf').onchange=e=>{const f=e.target.files[0];if(!f)return;const rd=new FileReader();rd.onload=()=>{initEditor(rd.result);document.querySelector('.tabs2 [data-m=paste]').click()};rd.readAsText(f)};
+  $('#edSave').onclick=async()=>{let body;
+    if(mode==='url'){const u=$('#upu').value.trim();if(!u)return;body={url:u}}else{const s=$('#src').value;if(!s.trim()){$('#addMsg').innerHTML='<div class="msg e">源码为空</div>';return}body={source:s}}
+    const b=$('#edSave');b.disabled=true;
+    try{await send(body)}catch(e){
+      if(e.status===409&&confirm((e.message||'同名'+K.label+'已存在')+'\n是否覆盖？')){try{body.overwrite=true;await send(body)}catch(e2){$('#addMsg').innerHTML=`<div class="msg e">${esc(e2.message)}</div>`}}
+      else $('#addMsg').innerHTML=`<div class="msg e">添加失败：${esc(e.message)}</div>`}
+    b.disabled=false};
+  async function send(body){await api(K.api,{method:'POST',body});closeModal();K.reload()}
+}
+/* tools */
+let TOOLS=[];const tenc=encodeURIComponent;
+function prmList(sc){const p=(sc&&sc.properties)||{},rq=(sc&&sc.required)||[];return Object.keys(p).map(k=>({k,t:p[k].type||(p[k].enum?'enum':'any'),d:p[k].description||'',req:rq.includes(k),s:p[k]}))}
+async function loadTools(){const el=$('#t-tools');
+  try{TOOLS=await api('/api/tools')||[]}catch(e){el.innerHTML=`<div class="msg e">加载失败：${esc(e.message)}</div>`;return}
+  const on=TOOLS.filter(t=>t.enabled).length;
+  el.innerHTML=`<div class="card"><div class="row"><h3 class="sp" style="margin:0">工具（已启用 ${on} / ${TOOLS.length}）</h3><button class="btn" onclick="loadTools()">刷新</button><button class="btn p" onclick="addPlugin('tools')">＋ 添加自定义工具</button></div>
+  <p class="mut small">这些是对话模型可以调用的工具。<b>关闭的工具不会提供给模型</b>，模型也就不会调用它。描述决定了模型何时使用该工具，点击描述即可修改。</p>
+  ${TOOLS.map((t,i)=>{const ps=prmList(t.parameters),st=t.stats||{},mod=t.default_description!=null&&t.description!==t.default_description;
+   return `<div class="tl-card${t.enabled?'':' off'}"><div class="row" style="align-items:flex-start;flex-wrap:nowrap">
+    <label class="tg" style="margin-top:2px" title="${t.enabled?'点击禁用':'点击启用'}"><input type="checkbox" ${t.enabled?'checked':''} onchange="toggleTool(${i},this)"><span></span></label>
+    <div class="sp" style="min-width:0"><div class="row" style="gap:6px"><span class="tl-name">${esc(t.name)}</span>
+     <span class="badge ${t.source==='custom'?'b-cus':''}">${t.source==='custom'?'自定义':'内置'}</span>${t.enabled?'':'<span class="badge">已禁用</span>'}${mod?`<span class="badge b-mod">已修改</span><button class="btn s" onclick="resetDesc(${i})">恢复默认</button>`:''}</div>
+     <div class="tl-desc" id="td-${i}" title="点击编辑描述" onclick="editDesc(${i})">${esc(t.description||'')||'<span class="mut">（无描述，点击添加）</span>'}</div>
+     <div>${ps.length?ps.map(p=>`<span class="prm${p.req?' req':''}" title="${esc(p.d)}"><b>${esc(p.k)}</b>${p.req?'*':''}<i>: ${esc(p.t)}</i></span>`).join(''):'<span class="mut small">无参数</span>'}</div>
+     <div class="stats" style="margin-top:6px"><span>调用 <b>${st.calls||0}</b></span><span>失败 <b style="${st.errors?'color:var(--err)':''}">${st.errors||0}</b></span><span>平均耗时 <b>${st.calls?fmtMs(Math.round(st.avg_ms||0)):'—'}</b></span><span>最近调用 <b>${st.last_time?fmtTime(st.last_time):'—'}</b></span>${t.file?`<span class="mono">${esc(t.file)}</span>`:''}</div></div>
+    <div class="row" style="flex-wrap:nowrap"><button class="btn s" onclick="testTool(${i})">测试</button>${t.source==='custom'?`<button class="btn s" onclick="editPl(TOOLS[${i}].name,'tools')">源码</button><button class="btn s d" onclick="delTool(${i})">删除</button>`:''}</div></div></div>`}).join('')||'<p class="mut">暂无工具</p>'}</div>`;
+}
+async function toggleTool(i,cb){cb.disabled=true;try{await api(`/api/tools/${tenc(TOOLS[i].name)}/${cb.checked?'enable':'disable'}`,{method:'POST'})}catch(e){cb.checked=!cb.checked;alert('操作失败：'+e.message)}loadTools()}
+async function putDesc(i,d){try{await api('/api/tools/'+tenc(TOOLS[i].name),{method:'PUT',body:{description:d}});loadTools()}catch(e){alert('保存失败：'+e.message)}}
+function resetDesc(i){if(confirm('恢复为默认描述？'))putDesc(i,null)}
+function editDesc(i){const t=TOOLS[i],el=$('#td-'+i);if(!el||el.querySelector('textarea'))return;
+  el.onclick=null;el.innerHTML=`<textarea rows="4" id="tdi-${i}">${esc(t.description||'')}</textarea><div class="row" style="margin-top:6px"><span class="mut small sp">Ctrl+Enter 保存，Esc 取消</span><button class="btn s" id="tdc-${i}">取消</button><button class="btn s p" id="tds-${i}">保存</button></div>`;
+  const ta=$('#tdi-'+i);ta.focus();const save=()=>{const v=ta.value.trim();if(v===(t.description||''))return loadTools();putDesc(i,v)};
+  $('#tds-'+i).onclick=e=>{e.stopPropagation();save()};$('#tdc-'+i).onclick=e=>{e.stopPropagation();loadTools()};
+  ta.onkeydown=e=>{if(e.key==='Escape')loadTools();if(e.key==='Enter'&&(e.ctrlKey||e.metaKey))save()}}
+async function delTool(i){const n=TOOLS[i].name;if(!confirm(`确定删除自定义工具 “${n}”？此操作不可恢复。`))return;try{await api('/api/tools/'+tenc(n),{method:'DELETE'});loadTools()}catch(e){alert('删除失败：'+e.message)}}
+function testTool(i){const t=TOOLS[i],ps=prmList(t.parameters);
+  const fid2=k=>'ta-'+i+'-'+ps.findIndex(p=>p.k===k);
+  const inp=p=>{const id=fid2(p.k),ds=p.s.default;
+    if(p.s.enum)return `<select id="${id}"><option value="">（不填）</option>${p.s.enum.map(v=>`<option ${v===ds?'selected':''}>${esc(v)}</option>`).join('')}</select>`;
+    if(p.t==='boolean')return `<select id="${id}"><option value="">（不填）</option><option value="true">true</option><option value="false">false</option></select>`;
+    if(p.t==='number'||p.t==='integer')return `<input type="number" id="${id}" ${p.t==='integer'?'step="1"':'step="any"'} value="${ds??''}">`;
+    if(p.t==='object'||p.t==='array')return `<textarea class="mono" rows="3" id="${id}" placeholder="${p.t==='array'?'[ ]':'{ }'}（JSON）">${ds!=null?esc(JSON.stringify(ds)):''}</textarea>`;
+    return `<input type="text" id="${id}" value="${esc(ds??'')}">`};
+  openModal(`<div class="row"><h3 class="sp" style="margin:0">测试工具：<span class="mono">${esc(t.name)}</span></h3><button class="btn s" onclick="closeModal()">✕</button></div>
+  <p class="mut small">${esc(t.description||'')}</p>${t.enabled?'':'<div class="msg i">该工具当前已禁用，模型不会调用它，但仍可在这里测试。</div>'}
+  <div class="tabs2"><button class="btn on" data-m="form">表单</button><button class="btn" data-m="raw">JSON 参数</button></div>
+  <div id="tm-form">${ps.length?ps.map(p=>`<label class="f"><div><b class="mono" style="color:var(--fg)">${esc(p.k)}</b>${p.req?' <span style="color:var(--err)">*</span>':''} <span class="mono">${esc(p.t)}</span> ${esc(p.d)}</div>${inp(p)}</label>`).join(''):'<p class="mut">此工具没有参数。</p>'}</div>
+  <div id="tm-raw" class="hide"><textarea class="mono" rows="8" id="traw">{}</textarea></div>
+  <div id="tMsg"></div><div class="row" style="margin-top:10px"><span class="sp" id="tMs"></span><button class="btn" onclick="closeModal()">关闭</button><button class="btn p" id="tRun">运行</button></div><div id="tOut"></div>`);
+  let mode='form';
+  const fromForm=()=>{const a={};for(const p of ps){const e=document.getElementById(fid2(p.k));if(!e)continue;const v=e.value;if(v==='')continue;
+    if(p.t==='number'||p.t==='integer')a[p.k]=Number(v);else if(p.t==='boolean'&&!p.s.enum)a[p.k]=v==='true';
+    else if(p.t==='object'||p.t==='array'){try{a[p.k]=JSON.parse(v)}catch(_){throw new Error(`参数 ${p.k} 不是有效的 JSON`)}}else a[p.k]=v}
+    const miss=ps.filter(p=>p.req&&!(p.k in a)).map(p=>p.k);if(miss.length)throw new Error('缺少必填参数：'+miss.join('、'));return a};
+  document.querySelectorAll('.tabs2 .btn').forEach(b=>b.onclick=()=>{const m=b.dataset.m;
+    if(m==='raw'&&mode==='form'){try{$('#traw').value=JSON.stringify(fromForm(),null,2)}catch(_){}}
+    mode=m;document.querySelectorAll('.tabs2 .btn').forEach(x=>x.classList.toggle('on',x===b));['form','raw'].forEach(x=>$('#tm-'+x).classList.toggle('hide',x!==m))});
+  $('#tRun').onclick=async()=>{const b=$('#tRun');$('#tMsg').innerHTML='';let args;
+    try{args=mode==='raw'?JSON.parse($('#traw').value||'{}'):fromForm()}catch(e){$('#tMsg').innerHTML=`<div class="msg e">${esc(e.message)}</div>`;return}
+    b.disabled=true;$('#tMs').innerHTML='<span class="spin"></span> 运行中…';$('#tOut').innerHTML='';const t0=Date.now();
+    try{const r=await api(`/api/tools/${tenc(t.name)}/test`,{method:'POST',body:{args}})||{};
+      $('#tMs').innerHTML=`<span class="mut small">耗时 ${fmtMs(r.ms??Date.now()-t0)}</span>`;
+      $('#tOut').innerHTML=(r.error?`<div class="msg e">执行出错：${esc(r.error)}</div>`:'<div class="msg o">执行成功</div>')+(r.result!=null?`<pre class="res">${esc(pretty(r.result))}</pre>`:'')}
+    catch(e){$('#tMs').innerHTML='';$('#tOut').innerHTML=`<div class="msg e">请求失败：${esc(e.message)}</div>`}
+    b.disabled=false;if(cur==='tools')loadTools()}}
+$('#modal').onclick=e=>{if(e.target.id==='modal'&&confirm('关闭窗口？未保存的内容将丢失'))closeModal()};
+show(loaders[location.hash.slice(1)]?location.hash.slice(1):'status');
+</script></body></html>

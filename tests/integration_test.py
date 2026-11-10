@@ -2,6 +2,7 @@
 """End-to-end tests: mock OpenAI + mock 飞牛音乐 server, mico-agent in dry-run."""
 import hashlib
 import json
+import re
 import os
 import subprocess
 import sys
@@ -337,7 +338,7 @@ def web_tests(binary, script, env, cfg_path):
 
             st, j = js("GET", "/api/status")
             v = j.get("version", {})
-            if v.get("app") != "0.2.0" or not v.get("git") or not v.get("lua", "").startswith("Lua") \
+            if not re.match(r"^\d+\.\d+\.\d+", v.get("app", "")) or not v.get("git") or not v.get("lua", "").startswith("Lua") \
                     or not v.get("curl") or not v.get("compiler") or not v.get("build_time"):
                 fail("version %r" % v)
 

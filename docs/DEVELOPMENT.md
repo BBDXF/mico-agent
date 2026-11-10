@@ -54,16 +54,15 @@ Web 保存时合并写回配置文件（格式化 JSON）并立即生效（LLM�
 插件返回表 `{name, type="local"|"online", version, description, setup(cfg, all_cfg), stream(id) -> url, headers, on_play(id)?, available()?}`：
 
 - `local`：`list_tracks()` → `{ {id,title,artist,album,duration}, ... }`；全部写入模糊索引 `music`，id 为 `插件名:id`。
-- `online`：`search(query, limit)` → 同上；仅在本地无好结果（分数 < 0.6）或用户说“在线 / B站”时使用。
+- `online`：`search(query, limit)` → 同上；仅在本地无好结果（分数 < 0.6）或用户说“在线”时使用。
 - **插件配置写在插件文件里**：文件顶部 `M.config = {...}`，每项带中文注释（含义/示例/默认值）；
-  `setup(M.config, all_cfg)` 在加载与配置变更时调用。`config.json` 不再有 `fnos`/`bili` 段。
-  环境变量仍在运行时覆盖：`MICO_FN_URL/USER/PASS/AUTHX_PREFIX/CLIENT_KEY/TIMEOUT`、`MICO_BILI_API/WWW/COOKIE`。
+  `setup(M.config, all_cfg)` 在加载与配置变更时调用。`config.json` 不再有插件配置段。
+  环境变量仍在运行时覆盖：`MICO_FN_URL/USER/PASS/AUTHX_PREFIX/CLIENT_KEY/TIMEOUT`，在线音乐源插件也有对应的环境变量。
 - 新插件骨架：`GET /api/plugin-template`（两种类型都有注释说明）。
-- `fnos`、`bili` 为内置插件（`builtin=true`）：可禁用、不可删除。
+- `fnos` 与在线音乐源插件为内置插件（`builtin=true`）：可禁用、不可删除。
 
-内置：`fnos`（飞牛音乐，基于 `lib/fnmusic.lua`；歌单/收藏/歌词工具仍由 fnmusic 提供）、`bili`（B 站视频搜索，
-buvid3 取自 `/x/frontend/finger/spi`，可配置 Cookie/UA/每页条数；播放只选 `dash.audio` 中的普通 AAC 音轨
-（按 `audio_quality` 偏好，30216/30232/30280），**从不选杜比 `dash.dolby` 或无损 `dash.flac`**，回退 `durl`；无歌词）。
+内置：`fnos`（飞牛音乐本地曲库，基于 `lib/fnmusic.lua`）、在线音乐源插件（获取在线音乐，可配置 Cookie/UA/每页条数；
+播放只选普通 AAC 音轨，从不选杜比或无损音轨；无歌词）。
 `fnos` 同步索引时跳过音箱 ffmpeg 解不了的格式（`skip_formats`，默认 ape/wma/dsf/dff/alac；依次看 `format`、`codec`、
 路径扩展名，未知格式保留）。
 管理器 `lib/plugins.lua`：加载/启停（写回 `plugins.enabled`）/保存（`loadstring`+`pcall` 校验、旧版本存 `.bak`、热重载、本地插件立即重建索引）/删除。
@@ -102,7 +101,7 @@ buvid3 取自 `/x/frontend/finger/spi`，可配置 Cookie/UA/每页条数；播�
 `Content-Type/Length/Range`、`Accept-Ranges`；客户端慢时最多预读 `playback.buffer_kb`，之后阻塞上游）。
 默认播放方式即 `ubus call mediaplayer player_play_url` 播放 `http://127.0.0.1:PORT/stream/...`；
 `playback.mode="download"`（或 Web 服务未运行，如 `--once`）时回退为下载到 `/tmp/mico_play`（上限 `max_mb`，下载前与停止时删除旧文件）。
-注意：B 站音频是 DASH m4a 片段，原厂播放器能否解码需在真机验证。
+注意：在线音乐源返回的音频是 DASH m4a 片段，原厂播放器能否解码需在真机验证。
 
 ## Lua API（全局 `mico`）
 
@@ -149,8 +148,8 @@ buvid3 取自 `/x/frontend/finger/spi`，可配置 Cookie/UA/每页条数；播�
 |---|---|
 | `run_shell` | 执行命令（默认 10 s 超时，最大 60 s，输出截断 4000 字节）；`MICO_ENABLE_SHELL=0` 关闭，`shell_allow` 可设白名单 |
 | `http_request` | 类 curl 的 HTTP 请求 |
-| `music_search` | 曲库模糊搜索（首次自动同步索引；无结果回退飞牛服务端搜索，仍无好结果时附带在线结果）；`online=true` 只搜在线插件（B 站） |
-| `music_play` / `music_stop` / `music_now_playing` | 播放控制；`music_play` 接受本地与在线 id（`bili:BV...`），裸 id 视为飞牛 guid |
+| `music_search` | 曲库模糊搜索（首次自动同步索引；无结果回退飞牛服务端搜索，仍无好结果时附带在线结果）；`online=true` 只搜在线音乐源插件 |
+| `music_play` / `music_stop` / `music_now_playing` | 播放控制；`music_play` 接受本地与在线 id（`<插件名>:<id>`），裸 id 视为飞牛 guid |
 | `get_time` | 时间（自定义工具示例：`scripts/tools/get_time.lua`） |
 
 曲库索引在保存插件时自动重建，也可 `POST /api/index/sync` 手动重新同步。
@@ -171,7 +170,7 @@ handler 返回字符串或表（编码为 JSON）；`error()` 或返回 `{error=
 配置 `tools.disabled = {name=true}`、`tools.descriptions = {name="覆盖描述"}`；内置工具可禁用、改描述，不能编辑/删除。
 
 快路径（`scripts/main.lua`）：“播放/我想听/来首/来点…”类请求先本地模糊搜索，结果明确时直接播放、不调用 LLM；
-只匹配到歌手时随机播放该歌手的歌；有歧义交给 LLM 追问。“在B站播放X”“在线播放X”“去B站放X”等前缀直接走在线搜索。
+只匹配到歌手时随机播放该歌手的歌；有歧义交给 LLM 追问。“在线播放X”“网上找X”等前缀直接走在线搜索。
 
 对话记录：每轮 `{id, time, source:"voice"|"web", user, route:"fast"|"llm", reply, error?, duration_ms, status,
 steps:[{kind:"tool"|"llm"|"play"|"tts"|"info", name, args?, result?(截断 500 字节), ms, error?}]}`，

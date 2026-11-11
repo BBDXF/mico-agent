@@ -162,8 +162,13 @@ local function status()
     config_path = config.path,
     web_port = mico.web_port(),
     playback = config.get("playback"),
+    takeover = config.get("takeover"),
     version = mico.version(),
   }
+  if mico.mdns then
+    s.mdns = mico.mdns()
+    if #s.mdns.ips == 0 then setmetatable(s.mdns.ips, { __jsontype = "array" }) end
+  end
   if M.status_extra then for k, v in pairs(M.status_extra()) do s[k] = v end end
   return json(200, s)
 end

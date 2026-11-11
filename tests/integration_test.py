@@ -15,6 +15,7 @@ import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse, unquote, quote
 import base64
+import shutil
 
 LLM_REQUESTS = []
 COMPLETE_REQUESTS = []  # mico.complete (no tools): 边播边存 naming
@@ -348,6 +349,14 @@ def run_once(binary, script, env, text):
     return out
 
 
+def free_udp_port():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("0.0.0.0", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -356,8 +365,87 @@ def free_port():
     return p
 
 
+def mdns_query(name, qtype, addr, timeout=2.0):
+    """Sends one DNS query from an ephemeral port; returns {(name, type): rdata} or None."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(timeout)
+    try:
+        q = b"\x12\x34\0\0\0\x01\0\0\0\0\0\0"
+        q += b"".join(bytes([len(l)]) + l.encode() for l in name.split(".")) + b"\0"
+        q += bytes([0, qtype, 0, 1])
+        if addr[0].startswith("224."):
+            s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+        s.sendto(q, addr)
+        end = time.time() + timeout
+        while time.time() < end:
+            try:
+                data, _ = s.recvfrom(2048)
+            except socket.timeout:
+                return None
+            if data[:2] != b"\x12\x34":
+                continue
+            return parse_dns(data)
+    except OSError:
+        return None
+    finally:
+        s.close()
+
+
+def parse_dns(d):
+    def name(off):
+        labels, end = [], None
+        while True:
+            n = d[off]
+            if n >= 0xc0:
+                if end is None:
+                    end = off + 2
+                off = ((n & 0x3f) << 8) | d[off + 1]
+                continue
+            if n == 0:
+                return ".".join(labels), (end if end is not None else off + 1)
+            labels.append(d[off + 1:off + 1 + n].decode("utf-8", "replace"))
+            off += 1 + n
+    qd, an, ns, ar = (int.from_bytes(d[i:i + 2], "big") for i in (4, 6, 8, 10))
+    off, out = 12, {}
+    for _ in range(qd):
+        _, off = name(off)
+        off += 4
+    for _ in range(an + ns + ar):
+        n, off = name(off)
+        t = int.from_bytes(d[off:off + 2], "big")
+        ln = int.from_bytes(d[off + 8:off + 10], "big")
+        out[(n.lower(), t)] = d[off + 10:off + 10 + ln]
+        off += 10 + ln
+    return out
+
+
+def mdns_tests(mdns_port, port, js):
+    r = None
+    for _ in range(20):
+        r = mdns_query("MICO.local", 1, ("127.0.0.1", mdns_port), 0.5)
+        if r:
+            break
+    if not r or ("mico.local", 1) not in r or len(r[("mico.local", 1)]) != 4:
+        fail("mdns unicast A: %r" % r)
+    r = mdns_query("_http._tcp.local", 12, ("127.0.0.1", mdns_port))
+    srv = [v for (n, t), v in (r or {}).items() if t == 33]
+    if not r or not srv or int.from_bytes(srv[0][4:6], "big") != port or ("mico.local", 1) not in r:
+        fail("mdns PTR: %r" % r)
+    if mdns_query("other.local", 1, ("127.0.0.1", mdns_port), 0.5) is not None:
+        fail("mdns answered unknown name")
+    r = mdns_query("mico.local", 1, ("224.0.0.251", mdns_port), 1.0)
+    print("mdns multicast query: %s" % ("ok" if r and ("mico.local", 1) in r else "skipped (no multicast route)"))
+    st, j = js("GET", "/api/status")
+    m = j.get("mdns") or {}
+    if not m.get("enabled") or m.get("name") != "mico.local" or not isinstance(m.get("ips"), list):
+        fail("status mdns %r" % m)
+    if shutil.which("avahi-resolve"):
+        print("avahi-resolve available (real port 5353 not used in tests; skipped)")
+
+
 def web_tests(binary, script, env, cfg_path):
     port = free_port()
+    mdns_port = free_udp_port()
     with tempfile.TemporaryDirectory() as d:
         log = os.path.join(d, "instruction.log")
         open(log, "w").close()
@@ -373,7 +461,8 @@ def web_tests(binary, script, env, cfg_path):
             dst.write(src.read())
         logfile = os.path.join(d, "agent.log")
         wenv = dict(env, MICO_LOG_FILE=logfile, MICO_INSTRUCTION_LOG=log, MICO_WEB_LISTEN="127.0.0.1:%d" % port,
-                    MICO_WEB_TOKEN="tk", MICO_PLUGINS_DIR=pdir, MICO_TOOLS_DIR=tdir)
+                    MICO_WEB_TOKEN="tk", MICO_PLUGINS_DIR=pdir, MICO_TOOLS_DIR=tdir,
+                    MICO_MDNS="1", MICO_MDNS_PORT=str(mdns_port))
         proc = subprocess.Popen([binary, "-s", script], env=wenv, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, errors="replace")
         base = "http://127.0.0.1:%d" % port
@@ -410,10 +499,13 @@ def web_tests(binary, script, env, cfg_path):
                 if j["index"]["last_sync_time"]:
                     break
                 time.sleep(0.1)
+            if j.get("takeover", {}).get("mode") not in ("off", "music", "all"):
+                fail("status takeover: %r" % j.get("takeover"))
             ix = j["index"]
             if ix["last_reason"] != "startup" or ix["tracks"] < 6 or ix["last_error"] is not False \
                     or not isinstance(ix["last_sync_ms"], int) or not ix["next_sync_time"] or ix["syncing"]:
                 fail("startup sync status %r" % ix)
+            mdns_tests(mdns_port, port, js)
             st, j = js("GET", "/api/conversations")
             if not any(t["source"] == "system" and t["steps"][0]["name"] == "index_sync" for t in j["conversations"]):
                 fail("sync event not logged %r" % j)
@@ -1069,6 +1161,77 @@ def online_filter_tests(binary, script, env):
         fail("music_search kind param missing")
 
 
+def takeover_tests(binary, script, env, cfg_path):
+    """takeover.mode off / music / all."""
+    with open(cfg_path) as f:
+        orig = json.load(f)
+
+    def setmode(mode, keywords=None):
+        c = json.loads(json.dumps(orig))
+        c["takeover"] = {"mode": mode}
+        if keywords is not None:
+            c["takeover"]["keywords"] = keywords
+        with open(cfg_path, "w") as f:
+            json.dump(c, f)
+
+    def run(text):
+        LLM_REQUESTS.clear()
+        return run_once(binary, script, env, text)
+
+    try:
+        # off (default when unset): nothing happens.
+        c = json.loads(json.dumps(orig))
+        del c["takeover"]
+        with open(cfg_path, "w") as f:
+            json.dump(c, f)
+        out = run("播放周杰轮的七里香")
+        if LLM_REQUESTS or "mphelper pause" in out or "guid=g2" in out or "tts_play.sh" in out:
+            fail("off must not take over", out)
+        if "takeover: off（语音不接管，需在配置页开启）" not in out:
+            fail("off startup hint", out)
+        out = run("今天天气怎么样")
+        if LLM_REQUESTS or "mphelper pause" in out:
+            fail("off must not call LLM", out)
+
+        setmode("music")
+        out = run("播放周杰轮的七里香")
+        if LLM_REQUESTS or "mphelper pause" not in out or "guid=g2" not in out:
+            fail("music: song request", out)
+        if out.index("mphelper pause") > out.index("tts_play.sh"):
+            fail("music: pause must precede speech", out)
+        out = run("今天天气怎么样")
+        if LLM_REQUESTS or "mphelper pause" in out or "tts_play.sh" in out:
+            fail("music: non-song must be left to native", out)
+        out = run("请问今天天气怎么样")
+        if len(LLM_REQUESTS) < 1 or "mphelper pause" not in out:
+            fail("music: keyword to LLM", out)
+        msgs = [m for m in LLM_REQUESTS[0]["messages"] if m["role"] == "user"]
+        if msgs[-1]["content"] != "今天天气怎么样":
+            fail("music: keyword not stripped %r" % msgs)
+        out = run("，小爱ai 现在几点")
+        if not LLM_REQUESTS or "[tool] get_time" not in out:
+            fail("music: case-insensitive keyword after punct", out)
+
+        setmode("music", "帮我问，hey bot")
+        out = run("Hey Bot 现在几点")
+        if not LLM_REQUESTS or "mphelper pause" not in out:
+            fail("music: full-width comma keywords", out)
+        out = run("帮我问现在几点")
+        if not LLM_REQUESTS:
+            fail("music: full-width comma keyword 1", out)
+        out = run("请问现在几点")
+        if LLM_REQUESTS or "mphelper pause" in out:
+            fail("music: replaced keywords", out)
+
+        setmode("all")
+        out = run("今天天气怎么样")
+        if not LLM_REQUESTS or "mphelper pause" not in out:
+            fail("all: current behavior", out)
+    finally:
+        with open(cfg_path, "w") as f:
+            json.dump(orig, f)
+
+
 def main():
     binary = os.path.abspath(sys.argv[1])
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1082,11 +1245,12 @@ def main():
             "llm": {"base_url": "http://127.0.0.1:1/unused", "api_key": "file-key", "model": "file-model",
                     "extra": {"enable_thinking": False}},
             "web": {"listen": ""},
+            "takeover": {"mode": "all"},
         }, f)
     # Env overrides the file for base_url / api_key; model comes from the file.
     env = dict(os.environ, MICO_CONFIG=cfg_path, MICO_LLM_BASE_URL=base + "/v1", MICO_LLM_API_KEY="test",
                MICO_DRY_RUN="1", MICO_FN_URL=base, MICO_FN_USER="andy", MICO_FN_PASS="secret",
-               MICO_BILI_API=base, MICO_BILI_WWW="http://www.mock")
+               MICO_BILI_API=base, MICO_BILI_WWW="http://www.mock", MICO_MDNS="0")
     global SRV_PORT
     SRV_PORT = srv.server_port
     script = os.path.join(root, "scripts", "main.lua")
@@ -1157,6 +1321,7 @@ def main():
         fail("ape track played", out)
 
     online_filter_tests(binary, script, env)
+    takeover_tests(binary, script, env, cfg_path)
 
     # 5c. Shell can be disabled from the config file.
     with open(cfg_path) as f:

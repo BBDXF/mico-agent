@@ -12,7 +12,7 @@ make test     # 单元测试 + 集成测试（Python mock OpenAI 服务，dry-ru
 依赖：g++（C++14）、libcurl 开发头文件。Lua 5.1.5 与 nlohmann/json 3.11.3 已放在 `third_party/`。
 目标固件（1.77.6）自带 glibc 2.25、libstdc++ 6.0.22、libcurl 4.4.0，只动态链接 libc/libstdc++/libcurl。
 
-`make` 通过 `-D` 注入版本信息：`MICO_VERSION`（默认 `0.2.1`，可 `make MICO_VERSION=x.y.z`）、
+`make` 通过 `-D` 注入版本信息：`MICO_VERSION`（默认 `0.2.2`，可 `make MICO_VERSION=x.y.z`）、
 构建时 `git rev-parse --short HEAD`（失败为 `unknown`）、构建时间；运行时 `mico.version()` / `GET /api/status` 的 `version` 字段
 还包含 Lua 版本、libcurl 版本与编译器。
 
@@ -38,13 +38,14 @@ MICO_INSTRUCTION_LOG=/tmp/test.log MICO_DRY_RUN=1 build/mico-agent   # 跟随日
 | `agent` | `system_prompt` `max_steps`（默认 8） `max_history`（默认 20） | Agent 提示词与循环限制 |
 | `fast_path` | `enabled`（默认 true） `min_score`（0.6） `margin`（0.15） | “播放 X” 快路径：最佳分 ≥ min_score 且（≥0.8 或领先第二名 ≥ margin）时跳过 LLM |
 | `web` | `listen`（默认 `0.0.0.0:8080`，空串关闭） `token` | Web UI / API；`token` 非空时需 `Authorization: Bearer` 或 `?token=` |
+| `mdns` | `enabled`（默认 true） `hostname`（默认 `mico`，`[a-z0-9-]` 1–63 字符） `instance`（默认 `小爱音箱 mico-agent`） | 内置 mDNS 应答（`src/mdns.cpp`，仅 IPv4，UDP 5353，主循环非阻塞轮询）：A `<hostname>.local`、PTR `_http._tcp.local` → `<instance>._http._tcp.local`、SRV/TXT（`path=/`、`version=`）、`_services._dns-sd._udp.local`；TTL 120；每 30 秒检查地址变化并重新广播；绑定失败只记日志。修改每秒检查一次即时生效 |
 | `shell` | `enabled` | 是否注册 `run_shell` |
 | `plugins` | `dir`（默认 `<脚本目录>/plugins`） `enabled{name:bool}` | 插件 |
 | `playback` | `mode`（`proxy` 默认 / `download`） `buffer_kb`（默认 1024，64–8192） `max_mb`（下载上限，默认 30） | 播放 |
 | | `instruction_log`、`dry_run`、`poll_ms`（默认 50） | |
 
 环境变量：`MICO_LLM_BASE_URL`、`MICO_LLM_API_KEY`、`MICO_LLM_MODEL`、
-`MICO_WEB_LISTEN`、`MICO_WEB_TOKEN`、`MICO_ENABLE_SHELL`、`MICO_PLUGINS_DIR`、`MICO_PLAYBACK`、`MICO_INSTRUCTION_LOG`、`MICO_DRY_RUN=1`。
+`MICO_WEB_LISTEN`、`MICO_WEB_TOKEN`、`MICO_ENABLE_SHELL`、`MICO_PLUGINS_DIR`、`MICO_PLAYBACK`、`MICO_INSTRUCTION_LOG`、`MICO_DRY_RUN=1`、`MICO_MDNS=0`（关闭 mDNS；测试用 `MICO_MDNS_PORT` 改端口）。
 Web 保存时合并写回配置文件（格式化 JSON）并立即生效（LLM、Agent、快路径、插件、shell、播放参数、poll_ms）；
 `web.listen`、`plugins.dir`、`instruction_log` 需重启（schema 中标记 `restart: true`）。
 所有字段的说明见 `scripts/lib/config.lua` 中的 `M.schema`。
@@ -84,7 +85,7 @@ Web 保存时合并写回配置文件（格式化 JSON）并立即生效（LLM�
 | `GET /` | Web UI（无需令牌） |
 | `GET /api/config` | `{config, defaults, effective, env_overrides, schema, path}`：`config` = 默认值合并配置文件，`effective` = 再叠加环境变量；密钥均显示为 `******`；`env_overrides` 为被环境变量覆盖的点号键（如 `llm.api_key`）；`schema` 为字段描述数组 `{key, label, type(string/number/bool/enum/text/secret/json), options?, min?, max?, help, restart?}` |
 | `PUT /api/config` | 合并保存（返回同 GET 并加 `ok`）；提交 `******` 表示不修改，键设为 `null` 表示恢复默认（从文件删除）；按 schema 校验类型/范围/枚举，失败返回 400 `{error, key}` |
-| `GET /api/status` | 运行时间、正在播放、索引大小、插件、`version{app,git,build_time,lua,curl,compiler}` |
+| `GET /api/status` | 运行时间、正在播放、索引大小、插件、`version{app,git,build_time,lua,curl,compiler}`、`mdns{enabled,name,ips}` |
 | `GET /api/conversations[?since=<id>]` | `{conversations, last_id}`，新的在前；`since` 只返回 id 更大的已完成轮次；进行中的一轮总在最前（`status:"running"`）。轮询时用 `last_id` 作下次的 `since` |
 | `GET /api/plugins` | `[{name,type,version,description,enabled,file,builtin,error?}]` |
 | `POST /api/plugins {source}` 或 `{url}` | 安装（`url` 为在线添加，服务端 HTTP 下载）；同名已存在返回 409，除非 `overwrite:true` |
@@ -162,6 +163,7 @@ C++ 与 `mico.log` 共用一个日志出口（`src/logger.cpp`）：配置 `log.
 | `mico.log(...)`、`mico.sleep(ms)` | 日志、休眠 |
 | `mico.json_encode(v, true)` | 格式化 JSON |
 | `mico.config_path()` / `mico.script_dir()` / `mico.web_port()` | `-c` 路径、脚本目录、Web 端口（未监听为 nil） |
+| `mico.mdns()` | `{enabled, name, ips}` mDNS 状态 |
 | `mico.listdir(dir)` / `mico.tool_remove(name)` | 列目录、注销工具 |
 | `mico.version()` | `{app, git, build_time, lua, curl, compiler}` |
 | `mico.now_ms()` | 单调时钟毫秒（计时用） |
@@ -224,7 +226,11 @@ steps:[{kind:"tool"|"llm"|"play"|"tts"|"info", name, args?, result?(截断 500 �
 
 飞牛音乐的流地址必须带 Cookie，原厂播放器只接受裸 URL，因此经本地流代理播放（见上）。
 
-脚本约定：全局 `config` 表（`instruction_log`、`poll_ms`（每轮读取）、`from_start`、`web.listen`）由 C++ 读取；全局 `on_input(text, dialog_id)` 处理每条最终识别结果。`require` 会搜索脚本目录及其 `lib/`。
+脚本约定：全局 `config` 表（`instruction_log`、`poll_ms`（每轮读取）、`from_start`、`web.listen`）由 C++ 读取；全局 `on_input(text, dialog_id)` 处理每条最终识别结果。
+
+语音接管（`scripts/main.lua`）：`on_input` 按 `takeover.mode` 分流——`off`（默认）只记录为 `route="ignored"`，不碰原生助手；`music` 先匹配 `takeover.keywords` 前缀（先把全角“，”换成“,”，跳过开头空格/标点，仅 ASCII 不区分大小写），命中则去掉关键词后走 快路径 → LLM，否则调用 `plan_fast_play`（只做搜索查找，无播报/播放）判断是否点歌，不是则直接返回交给原生助手；`all` 为接管全部。`speaker.pause_native()` 只在确定接管后调用。快路径拆成 `plan_fast_play`（决策）和 `exec_fast_play`（播报 + 播放）；`web.ask`（网页提问）不受模式影响。
+
+`require` 会搜索脚本目录及其 `lib/`。
 
 ## 参考的 C/C++ Agent 项目
 

@@ -28,12 +28,14 @@
 
 ## 功能
 
+- **语音接管**（`takeover.mode`，默认 `off` 关闭）：`off` 不接管任何语音，小爱原生助手（闹钟、智能家居等）照常工作；`music` 只接管点歌（快路径能直接播放的请求）和以接管关键词（`takeover.keywords`，默认“请问,问问AI,小爱AI”）开头的话；`all` 接管所有语音。只有真正接管时才暂停原生助手；网页提问不受模式影响。
 - **Agent**：OpenAI 兼容接口（默认 SiliconFlow `Qwen/Qwen3-8B`），多轮工具调用。
 - **内置工具**：`run_shell`、`http_request`、`music_search`、`music_play`、`music_stop`、`music_now_playing`；自定义工具放在 `scripts/tools/`。
 - **音乐插件**：`fnos`（本地源，飞牛音乐曲库，自动跳过音箱解不了的 APE/WMA/DSD/ALAC）、在线音乐源插件（获取在线音乐，只选普通 AAC 音轨）。
 - **曲库索引**：启动时同步、定时同步、搜不到时自动补同步，也可在网页上手动同步。
 - **边播边存**（默认关闭）：播放在线音乐源的歌曲时，同时经 WebDAV 保存到 NAS（按时长 / 关键词过滤，自动去重；保存前由大模型规范歌手/歌名并修正同音字，歌手按本地曲库写法校正，非原曲或无法确定歌手时不保存），之后本地曲库即可直接播放。
 - **Web 控制台**（默认 `:8080`）：状态 / 对话 / 配置 / 工具 / 插件，可设访问令牌。
+- **局域网域名**：内置 mDNS 应答（音箱固件没有 mDNS 服务），可直接用 `http://mico.local:8080` 访问，并发布 `_http._tcp` 服务供服务发现工具查看。
 
 ## 部署
 
@@ -62,7 +64,9 @@ vi scripts/plugins/fnos.lua         # 顶部 M.config 填 NAS 地址、账号、
 运行日志写到 `/tmp/mico-agent.log`（内存盘，按 `log.max_kb` 自动轮转，有上限），可通过 `GET /api/logs?lines=200` 查看。
 不要把输出重定向到 `/data` 下的文件，否则会无限增长占满空间。
 
-打开 `http://<音箱IP>:8080`，在网页里继续配置。确认可用后，把启动命令加入开机脚本（例如 `/data/` 下的自启动脚本，按你的 root 方案而定），建议设置 `web.token`。
+打开 `http://mico.local:8080`（或 `http://<音箱IP>:8080`），在网页里继续配置。
+**语音接管默认关闭**（启动日志会提示 `takeover: off`）：在网页“配置”页把“语音接管模式”（`takeover.mode`）改为 `music`（推荐，只接管点歌和关键词开头的话）或 `all`，保存即生效；也可在 `config.json` 写 `"takeover": {"mode": "music"}`。
+主机名可在配置 `mdns.hostname` 修改；部分 Android 浏览器不能解析 `.local`，此时请用 IP 访问。确认可用后，把启动命令加入开机脚本（例如 `/data/` 下的自启动脚本，按你的 root 方案而定），建议设置 `web.token`。
 
 > `/data` 空间很小且可能被系统清理，请自行备份 `config.json` 和改过的插件。
 
@@ -93,6 +97,11 @@ make CROSS=arm-linux-gnueabihf- dist  # 需要 GCC 6 / glibc ≤ 2.25 的交叉�
 - 边播边存的歌名规范化在主线程同步调用大模型（默认超时 8 秒），期间新的语音指令会稍有延迟。
 
 ## 更新记录
+
+### v0.2.2
+
+- **语音接管模式**：新增 `takeover.mode`（`off` 默认 / `music` / `all`）与 `takeover.keywords`（逗号分隔，中英文逗号均可，英文不区分大小写）。此前每句话都会暂停原生助手并交给本程序，导致闹钟、智能家居等失效；现在默认不接管，需在配置页开启。`music` 模式先无副作用地判断是否为点歌（快路径），只有接管时才暂停原生助手；未接管的话在对话记录中标为 `ignored`。`GET /api/status` 新增 `takeover`。
+- **局域网域名（mDNS）**：内置精简 mDNS 应答器，`http://mico.local:8080` 即可打开控制台；同时发布 `_http._tcp` 服务（TXT 含 `path=/`、`version`）。启动时广播两次，Wi-Fi 重连 / 地址变化后自动重新广播，退出时发送下线通知。配置 `mdns.enabled` / `mdns.hostname` / `mdns.instance`，保存后约 1 秒生效；环境变量 `MICO_MDNS=0` 可关闭。`GET /api/status` 新增 `mdns{enabled,name,ips}`。
 
 ### v0.2.1
 

@@ -487,6 +487,22 @@ static int l_script_dir(lua_State* L) {
     return 1;
 }
 
+static int l_mdns(lua_State* L) {
+    Runtime* r = rt(L);
+    lua_createtable(L, 0, 3);
+    lua_pushboolean(L, r->mdns_enabled);
+    lua_setfield(L, -2, "enabled");
+    lua_pushstring(L, r->mdns_name.c_str());
+    lua_setfield(L, -2, "name");
+    lua_createtable(L, static_cast<int>(r->mdns_ips.size()), 0);
+    for (size_t i = 0; i < r->mdns_ips.size(); ++i) {
+        lua_pushstring(L, r->mdns_ips[i].c_str());
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    lua_setfield(L, -2, "ips");
+    return 1;
+}
+
 static int l_web_port(lua_State* L) {
     if (!rt(L)->web_port) return 0;
     lua_pushnumber(L, rt(L)->web_port);
@@ -637,7 +653,7 @@ Runtime::Runtime() : L_(luaL_newstate()) {
         {"reset", l_reset},   {"md5", l_md5},                 {"sha256", l_sha256},
         {"pinyin", l_pinyin}, {"index_clear", l_index_clear}, {"index_add", l_index_add},
         {"index_size", l_index_size}, {"index_search", l_index_search},
-        {"config_path", l_config_path}, {"script_dir", l_script_dir}, {"web_port", l_web_port},
+        {"config_path", l_config_path}, {"script_dir", l_script_dir}, {"web_port", l_web_port}, {"mdns", l_mdns},
         {"listdir", l_listdir}, {"tool_remove", l_tool_remove}, {"version", l_version}, {"now_ms", l_now_ms},
         {"save_start", l_save_start}, {"log_config", l_log_config}, {"log_tail", l_log_tail}, {"proc_reap", l_proc_reap}, {"dav_test", l_dav_test},
         {nullptr, nullptr},

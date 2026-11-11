@@ -8,7 +8,9 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <string>
@@ -17,6 +19,7 @@
 #include "httpd.h"
 #include "instruction.h"
 #include "logger.h"
+#include "mdns.h"
 #include "runtime.h"
 #include "tail.h"
 
@@ -27,6 +30,57 @@ static double rt_now_ms() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+}
+
+// Reads the mdns config section; returns false when disabled.
+static bool mdns_config(mico::Runtime& rt, mico::MdnsInfo& info) {
+    const char* env = std::getenv("MICO_MDNS");
+    if (env && (!std::strcmp(env, "0") || !std::strcmp(env, "false"))) return false;
+    if (rt.config_number("mdns.enabled", 1) == 0) return false;
+    info.host = rt.config_string("mdns.hostname", "mico");
+    for (auto& c : info.host) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (!mico::mdns_valid_host(info.host)) info.host = "mico";
+    info.instance = rt.config_string("mdns.instance", "");
+    if (info.instance.empty()) info.instance = "mico-agent";
+    info.port = rt.web_port;
+    info.version = MICO_VERSION;
+    return true;
+}
+
+static void mdns_sync(mico::Runtime& rt, mico::MdnsResponder& md, bool& failed) {
+    mico::MdnsInfo want;
+    bool on = mdns_config(rt, want);
+    if (!on) {
+        if (md.running()) {
+            md.stop();
+            mico::logf("mdns: disabled");
+        }
+        failed = false;
+    } else if (!md.running()) {
+        if (!failed) {  // don't retry a failed bind every second; toggling mdns.enabled resets this
+            std::string err;
+            if (md.start(want, err)) {
+                md.poll(rt_now_ms());
+                std::string ips;
+                for (const auto& ip : md.ips()) ips += (ips.empty() ? "" : ", ") + ip;
+                std::string svc = want.port ? " (http :" + std::to_string(want.port) + ")" : "";
+                mico::logf("mdns: %s.local -> %s%s", want.host.c_str(), ips.empty() ? "(no address yet)" : ips.c_str(),
+                           svc.c_str());
+            } else {
+                mico::logf("mdns: %s", err.c_str());
+                failed = true;
+            }
+        }
+    } else {
+        const mico::MdnsInfo& cur = md.info();
+        if (cur.host != want.host || cur.instance != want.instance || cur.port != want.port) {
+            md.update(want);
+            mico::logf("mdns: now %s.local", want.host.c_str());
+        }
+    }
+    rt.mdns_enabled = md.running();
+    rt.mdns_name = (on ? want.host : md.info().host) + ".local";
+    rt.mdns_ips = md.ips();
 }
 
 static void usage() {
@@ -89,12 +143,16 @@ int main(int argc, char** argv) {
                 }
             }
             auto handler = [&rt](const mico::WebRequest& req) { return rt.handle_http(req); };
+            mico::MdnsResponder mdns;
+            bool mdns_failed = false;
+            mdns_sync(rt, mdns, mdns_failed);
             std::string last_dialog;
             double last_tick = -1e18;  // first tick right after startup (web is already up)
             while (!g_stop) {
                 double now = rt_now_ms();
                 if (now - last_tick >= 1000) {
                     last_tick = now;
+                    mdns_sync(rt, mdns, mdns_failed);
                     std::string terr;
                     if (!rt.call_hook("on_tick", {}, terr) && terr.rfind("no global function", 0) != 0) {
                         mico::logf("on_tick: %s", terr.c_str());
@@ -115,6 +173,7 @@ int main(int argc, char** argv) {
                 double poll_ms = rt.config_number("poll_ms", 50);
                 if (!(poll_ms >= 1 && poll_ms <= 1000)) poll_ms = 50;
                 web.poll(static_cast<int>(poll_ms), handler);
+                mdns.poll(rt_now_ms());
             }
         }
     }

@@ -23,11 +23,15 @@ M.defaults = {
   },
   -- Rule-based "播放 X" shortcut that skips the LLM when the match is clear.
   fast_path = { enabled = true, min_score = 0.6, margin = 0.15 },
+  -- Voice takeover: "off" (default, native assistant untouched) | "music" | "all".
+  takeover = { mode = "off", keywords = "请问,问问AI,小爱AI" },
   poll_ms = 50,
   -- Local-library index sync: on startup, every N minutes, and once on a search miss.
   index = { sync_on_start = true, sync_interval_min = 360, miss_resync_min = 10 },
   -- Plugin settings (飞牛 / B站 ...) live in each plugin file's M.config.
   web = { listen = "0.0.0.0:8080", token = "" },
+  -- Built-in mDNS responder: http://<hostname>.local:<web port>
+  mdns = { enabled = true, hostname = "mico", instance = "小爱音箱 mico-agent" },
   shell = { enabled = true },
   plugins = { dir = "", enabled = {} },
   -- Agent tools: custom tool dir, per-tool disable flags and description overrides.
@@ -84,6 +88,8 @@ M.schema = {
   { key = "fast_path.enabled", label = "启用快路径", type = "bool", help = "“播放 X” 匹配明确时跳过 LLM 直接播放" },
   { key = "fast_path.min_score", label = "快路径最低分", type = "number", min = 0, max = 1, help = "最佳匹配低于此分数时交给 LLM" },
   { key = "fast_path.margin", label = "快路径领先差", type = "number", min = 0, max = 1, help = "第一名领先第二名至少此分差才直接播放（分数 ≥0.8 时总是播放）" },
+  { key = "takeover.mode", label = "语音接管模式", type = "enum", options = { "off", "music", "all" }, help = "默认 off（关闭）：不接管任何语音，小爱原生助手照常处理，需在此显式开启。music：只接管点歌（快路径能直接播放的请求）和以接管关键词开头的话；all：接管所有语音（闹钟、智能家居等原生功能将失效）。web 控制台提问不受影响。保存后立即生效" },
+  { key = "takeover.keywords", label = "接管关键词", type = "string", help = "music 模式下，以这些词开头的话交给本程序（去掉关键词后先走快路径再交给 LLM）。逗号分隔（中英文逗号均可），英文不区分大小写" },
   { key = "index.sync_on_start", label = "启动时同步曲库", type = "bool", help = "启动后立即从本地插件（飞牛等）重建曲库索引" },
   { key = "index.sync_interval_min", label = "定时同步间隔（分钟）", type = "number", min = 0, max = 10080, help = "每隔多少分钟自动重建曲库索引；0 关闭定时同步" },
   { key = "index.miss_resync_min", label = "未命中重同步间隔（分钟）", type = "number", min = 0, max = 10080, help = "本地搜索最佳分数低于快路径最低分、且距上次同步超过此分钟数时，先重新同步再搜一次；0 关闭" },
@@ -114,6 +120,9 @@ M.schema = {
   { key = "log.stderr", label = "同时输出到 stderr", type = "bool", help = "日志同时写到标准错误（在音箱上建议启动时重定向到 /dev/null）" },
   { key = "web.listen", label = "Web 监听地址", type = "string", restart = true, help = "如 0.0.0.0:8080，空串关闭 Web" },
   { key = "web.token", label = "Web 访问令牌", type = "secret", help = "非空时需 Authorization: Bearer 或 ?token=" },
+  { key = "mdns.enabled", label = "局域网域名（mDNS）", type = "bool", help = "内置 mDNS 应答：局域网内可用 http://<主机名>.local:端口 访问，并发布 _http._tcp 服务（环境变量 MICO_MDNS=0 可强制关闭）。保存后约 1 秒生效" },
+  { key = "mdns.hostname", label = "mDNS 主机名", type = "string", pattern = "^[a-z0-9%-]+$", max_len = 63, pattern_help = "只能包含小写字母、数字和 -，1–63 个字符", help = "<主机名>.local；只能用小写字母、数字和 -，1–63 个字符。保存后约 1 秒生效" },
+  { key = "mdns.instance", label = "mDNS 服务名", type = "string", help = "DNS-SD 服务实例名（可用中文，最长 63 字节），显示在服务发现工具里。保存后约 1 秒生效" },
   { key = "shell.enabled", label = "允许 shell 工具", type = "bool", help = "是否注册 run_shell 工具" },
   { key = "plugins.dir", label = "插件目录", type = "string", restart = true, help = "默认 <脚本目录>/plugins" },
   { key = "tools.dir", label = "自定义工具目录", type = "string", restart = true, help = "默认 <脚本目录>/tools；每个 .lua 文件是一个工具" },
@@ -240,6 +249,9 @@ local function validate_value(f, v)
   local t = f.type
   if t == "string" or t == "text" or t == "secret" then
     if type(v) ~= "string" then return nil, f.key .. " 必须是字符串" end
+    if (f.pattern and not v:match(f.pattern)) or (f.max_len and #v > f.max_len) then
+      return nil, f.key .. " " .. (f.pattern_help or "格式不正确")
+    end
   elseif t == "bool" then
     if type(v) ~= "boolean" then return nil, f.key .. " 必须是布尔值" end
   elseif t == "enum" then

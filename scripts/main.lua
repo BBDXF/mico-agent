@@ -134,17 +134,18 @@ local function looks_like_artist(q, artist_like)
   return hits[1] ~= nil and hits[1].title_score >= 0.8
 end
 
-local function try_fast_play(text)
+-- Plan (no side effects beyond lookups/info steps): returns a plan table or nil.
+local function plan_fast_play(text)
   local q, online, artist_like = strip_play_request(text)
   local fp = config.current.fast_path
-  if not fp.enabled then return false end
-  if not q or not plugins.any_available() then return false end
+  if not fp.enabled then return nil end
+  if not q or not plugins.any_available() then return nil end
   for _, w in ipairs({ "在线", "网上", "B站", "b站", "哔哩哔哩" }) do
     local i = q:find(w, 1, true)
     if i then online = true; q = (q:sub(1, i - 1) .. q:sub(i + #w)) end
   end
   q = q:gsub("^的", ""):gsub("^上的", "")
-  if q == "" then return false end
+  if q == "" then return nil end
   local t0 = mico.now_ms()
   local function info(msg)
     web.step({ kind = "info", name = "fast_path", result = msg, ms = mico.now_ms() - t0 })
@@ -161,7 +162,7 @@ local function try_fast_play(text)
   end
   local list = tools.search_music(q, 20, opts)
   local top = list and list[1]
-  if not top then info("快路径：未找到 " .. q .. "，交给 LLM"); return false end
+  if not top then info("快路径：未找到 " .. q .. "，交给 LLM"); return nil end
   local second = list[2]
   local pick
   if top.matched == "artist" then
@@ -173,72 +174,140 @@ local function try_fast_play(text)
     if not online and kind ~= "audio" then
       -- Online hits for a failed local match are often unrelated videos; let the LLM decide.
       info("快路径：本地未匹配 " .. q .. "，在线结果不自动播放，交给 LLM")
-      return false
+      return nil
     end
     pick = top
   elseif top.score < fp.min_score then
     info(string.format("快路径：%s 最佳 %s %.2f 太低，交给 LLM", q, top.title, top.score))
-    return false
+    return nil
   elseif top.score >= 0.8 or not second or top.score - second.score >= fp.margin then
     pick = top
   else
     info(string.format("快路径：%s 有歧义（%s %.2f / %s %.2f），交给 LLM", q, top.title, top.score,
       second.title, second.score))
-    return false  -- ambiguous: let the LLM ask
+    return nil  -- ambiguous: let the LLM ask
   end
   info(string.format("快路径：匹配 %s/%s %.2f%s", pick.title, pick.artist ~= "" and pick.artist or "-",
     pick.score or 0, (online or kind == "audio") and ("（在线，" .. kind .. "）") or ""))
+  return { pick = pick, q = q, kind = kind, text = text }
+end
+
+-- Execute a plan: announce + play.
+local function exec_fast_play(plan)
+  local pick, q = plan.pick, plan.q
   mico.log("fast play:", q, "->", pick.title, pick.artist, pick.score)
   -- Online video titles are noisy ("【Hi-Res】…"): announce what the user asked for.
   pick.say = pick.matched == "online" and q or ((pick.artist ~= "" and (pick.artist .. "的") or "") .. pick.title)
   speaker.speak("为你播放" .. pick.say)
-  if pick.matched == "online" and kind ~= "audio" then
+  if pick.matched == "online" and plan.kind ~= "audio" then
     -- 边播边存 naming input: the saver normalizes it (LLM / library / rules).
-    pick.save = { query = q, utterance = text }
+    pick.save = { query = q, utterance = plan.text }
   end
   local ok, err = tools.play_track(pick)
   if not ok then mico.log("play failed:", err) end
-  return true, pick, err
+  return pick, err
+end
+
+-- fast path (plan given or computed) → LLM; records the turn. Returns reply, err.
+local function handle(text, plan, speak)
+  if plan == nil then plan = plan_fast_play(text) end
+  if plan then
+    local pick, perr = exec_fast_play(plan)
+    local reply = "为你播放" .. pick.say
+    web.end_turn({ route = "fast", reply = reply, error = perr and tostring(perr) or nil })
+    return reply
+  end
+  local reply, err = mico.ask(text)
+  if speak then
+    if not reply then
+      mico.log("ask failed:", err)
+      speaker.speak("抱歉，我暂时无法回答。")
+    else
+      mico.log("reply:", reply)
+      speaker.speak(reply)
+    end
+  end
+  web.end_turn({ route = "llm", reply = reply or "", error = (not reply) and tostring(err) or nil })
+  return reply, err
+end
+
+local function takeover_mode()
+  local m = (config.current.takeover or {}).mode
+  if m == "music" or m == "all" then return m end
+  return "off"
+end
+
+-- Leading spaces / punctuation (ASCII + common full-width) to skip before keyword matching.
+local lead_punct = { " ", "\t", "，", "。", "！", "？", "、", "：", "；", ",", ".", "!", "?", ":", ";" }
+local function trim_lead(s)
+  local changed = true
+  while changed do
+    changed = false
+    for _, p in ipairs(lead_punct) do
+      if s:sub(1, #p) == p then s = s:sub(#p + 1); changed = true end
+    end
+  end
+  return s
+end
+
+-- Returns the text after a takeover keyword, or nil.
+local function match_keyword(text)
+  local kw = tostring((config.current.takeover or {}).keywords or ""):gsub("，", ",")
+  local t = trim_lead(text)
+  local lt = t:lower()
+  for k in kw:gmatch("[^,]+") do
+    k = k:match("^%s*(.-)%s*$")
+    if k ~= "" and lt:sub(1, #k) == k:lower() then
+      return trim_lead(t:sub(#k + 1))
+    end
+  end
 end
 
 -- Called by C++ for every final recognition result (and by --once).
 function on_input(text, dialog_id)
   mico.log("user:", text, dialog_id)
+  local mode = takeover_mode()
+  local plan = false  -- false = not planned yet
+  if mode == "off" then
+    mico.log("takeover off: ignored")
+    web.begin_turn("voice", text)
+    web.end_turn({ route = "ignored", reply = "" })
+    return
+  elseif mode == "music" then
+    local rest = match_keyword(text)
+    if rest then
+      if rest == "" then mico.log("takeover: keyword only, ignored"); return end
+      text = rest
+      plan = nil
+    else
+      web.begin_turn("voice", text)
+      plan = plan_fast_play(text)
+      if not plan then
+        mico.log("takeover music: not a song request, left to native")
+        web.end_turn({ route = "ignored", reply = "" })
+        return
+      end
+      speaker.pause_native()
+      handle(text, plan, true)
+      return
+    end
+  else
+    plan = nil
+  end
   speaker.pause_native()
   web.begin_turn("voice", text)
-  local fast, pick, perr = try_fast_play(text)
-  if fast then
-    web.end_turn({ route = "fast", reply = "为你播放" .. pick.say,
-                   error = perr and tostring(perr) or nil })
-    return
-  end
-  local reply, err = mico.ask(text)
-  if not reply then
-    mico.log("ask failed:", err)
-    speaker.speak("抱歉，我暂时无法回答。")
-  else
-    mico.log("reply:", reply)
-    speaker.speak(reply)
-  end
-  web.end_turn({ route = "llm", reply = reply or "", error = (not reply) and tostring(err) or nil })
+  handle(text, plan, true)
 end
 
 -- Called by C++ for every web request.
 web.ask = function(text)
   mico.log("web:", web.truncate(text, 300))
   web.begin_turn("web", text)
-  local fast, pick, perr = try_fast_play(text)
-  if fast then
-    local reply = "为你播放" .. pick.say
-    web.end_turn({ route = "fast", reply = reply, error = perr and tostring(perr) or nil })
-    return reply
-  end
-  local reply, err = mico.ask(text)
-  web.end_turn({ route = "llm", reply = reply or "", error = (not reply) and tostring(err) or nil })
-  return reply, err
+  return handle(text, nil, false)
 end
 function on_http(method, path, query, headers, body)
   return web.handle(method, path, query, headers, body)
 end
 
 math.randomseed(os.time())
+if takeover_mode() == "off" then mico.log("takeover: off（语音不接管，需在配置页开启）") end

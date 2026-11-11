@@ -55,6 +55,10 @@ public:
     std::string config_path;  // from -c; exposed as mico.config_path()
     std::string script_dir = ".";
     int web_port = 0;         // exposed as mico.web_port() (nil when 0)
+    // mDNS state for mico.mdns() -> {enabled, name, ips}
+    bool mdns_enabled = false;
+    std::string mdns_name;
+    std::vector<std::string> mdns_ips;
 
 private:
     bool push_config(const std::string& key);  // pushes config value or returns false

@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include <arpa/inet.h>
+#include "mdns.h"
 #include "instruction.h"
 #include "runtime.h"
 #include "saver.h"
@@ -206,7 +208,112 @@ static void test_runtime_extras() {
     CHECK(rt.handle_http(req).status == 500);
 }
 
+static std::string dns_q(uint16_t id, const std::string& name_wire, uint16_t type, uint16_t cls) {
+    std::string q;
+    q += char(id >> 8); q += char(id & 0xff);
+    q += std::string("\0\0\0\x01\0\0\0\0\0\0", 10);
+    q += name_wire;
+    q += char(type >> 8); q += char(type & 0xff);
+    q += char(cls >> 8); q += char(cls & 0xff);
+    return q;
+}
+
+// Returns the type of each answer/additional RR; checks names via parse.
+static std::vector<std::pair<std::string, int>> dns_rrs(const std::string& r, int& an, int& ar, std::string& a_ip) {
+    std::vector<std::pair<std::string, int>> out;
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(r.data());
+    int qd = (p[4] << 8) | p[5];
+    an = (p[6] << 8) | p[7];
+    ar = (p[10] << 8) | p[11];
+    size_t off = 12;
+    std::vector<std::string> labels;
+    for (int i = 0; i < qd; ++i) {
+        mico::mdns_parse_name(p, r.size(), off, labels);
+        off += 4;
+    }
+    for (int i = 0; i < an + ar; ++i) {
+        if (!mico::mdns_parse_name(p, r.size(), off, labels)) break;
+        std::string n;
+        for (auto& l : labels) n += l + ".";
+        int type = (p[off] << 8) | p[off + 1];
+        int len = (p[off + 8] << 8) | p[off + 9];
+        if (type == 1 && len == 4) {
+            char b[32];
+            std::snprintf(b, sizeof b, "%d.%d.%d.%d", p[off + 10], p[off + 11], p[off + 12], p[off + 13]);
+            a_ip = b;
+        }
+        off += 10 + len;
+        out.push_back(std::make_pair(n, type));
+    }
+    return out;
+}
+
+static void test_mdns() {
+    CHECK(mico::mdns_valid_host("mico") && mico::mdns_valid_host("a-1") && !mico::mdns_valid_host("Mico") &&
+          !mico::mdns_valid_host("") && !mico::mdns_valid_host(std::string(64, 'a')) && !mico::mdns_valid_host("a.b"));
+    mico::MdnsInfo info;
+    info.host = "mico";
+    info.instance = "小爱音箱 mico-agent";
+    info.port = 8080;
+    info.version = "1.2.3";
+    uint32_t ip = htonl(0xc0a80105);  // 192.168.1.5
+    std::string out;
+    bool uni = false;
+    int an = 0, ar = 0;
+    std::string a_ip;
+    // A query, mixed case, QU bit.
+    std::string q = dns_q(0x1234, std::string("\x04MiCo\x05LOCAL\0", 12), 1, 0x8001);
+    CHECK(mico::mdns_answer(reinterpret_cast<const unsigned char*>(q.data()), q.size(), info, ip, false, out, &uni));
+    CHECK(uni && out[0] == 0 && out[1] == 0 && (unsigned char)out[2] == 0x84);
+    auto rr = dns_rrs(out, an, ar, a_ip);
+    CHECK(an == 1 && ar == 0 && rr.size() == 1 && rr[0].first == "mico.local." && a_ip == "192.168.1.5");
+    CHECK((unsigned char)out[out.size() - 14 + 2] == 0x80);  // class has cache-flush bit
+    // Legacy unicast query: echoes ID + question, no cache-flush.
+    CHECK(mico::mdns_answer(reinterpret_cast<const unsigned char*>(q.data()), q.size(), info, ip, true, out, &uni));
+    CHECK(out[0] == 0x12 && out[1] == 0x34 && out[5] == 1);
+    rr = dns_rrs(out, an, ar, a_ip);
+    CHECK(an == 1 && rr.size() == 1 && rr[0].second == 1);
+    // PTR _http._tcp.local -> instance, with SRV/TXT/A additionals.
+    q = dns_q(0, std::string("\x05_http\x04_tcp\x05local\0", 18), 12, 1);
+    CHECK(mico::mdns_answer(reinterpret_cast<const unsigned char*>(q.data()), q.size(), info, ip, false, out, &uni));
+    CHECK(!uni);
+    rr = dns_rrs(out, an, ar, a_ip);
+    CHECK(an == 1 && ar == 3 && rr.size() == 4 && rr[0].second == 12 && rr[1].second == 33 && rr[2].second == 16 &&
+          rr[3].second == 1 && rr[1].first == "小爱音箱 mico-agent._http._tcp.local." && a_ip == "192.168.1.5");
+    CHECK(out.find("path=/") != std::string::npos && out.find("version=1.2.3") != std::string::npos);
+    CHECK(out.find("\x1f\x90") != std::string::npos);  // SRV port 8080
+    // Two questions, the second compressed (mico + pointer to "local" at offset 12+6).
+    q = dns_q(0, std::string("\x09_services\x07_dns-sd\x04_udp\x05local\0", 30), 12, 1);
+    q[5] = 2;
+    q += std::string("\x04mico\xc0", 6);
+    q += char(12 + 23);  // offset of "\x05local"
+    q += std::string("\0\x01\0\x01", 4);
+    CHECK(mico::mdns_answer(reinterpret_cast<const unsigned char*>(q.data()), q.size(), info, ip, false, out, &uni));
+    rr = dns_rrs(out, an, ar, a_ip);
+    CHECK(an == 2 && rr.size() == 2 && rr[0].second == 12 && rr[0].first == "_services._dns-sd._udp.local." &&
+          rr[1].first == "mico.local." && rr[1].second == 1);
+    // Non-matching name, AAAA type, responses and pointer loops are ignored.
+    q = dns_q(0, std::string("\x05other\x05local\0", 13), 1, 1);
+    CHECK(!mico::mdns_answer(reinterpret_cast<const unsigned char*>(q.data()), q.size(), info, ip, false, out, &uni));
+    q = dns_q(0, std::string("\x04mico\x05local\0", 12), 28, 1);
+    CHECK(!mico::mdns_answer(reinterpret_cast<const unsigned char*>(q.data()), q.size(), info, ip, false, out, &uni));
+    q = dns_q(0, std::string("\x04mico\x05local\0", 12), 1, 1);
+    q[2] = char(0x84);
+    CHECK(!mico::mdns_answer(reinterpret_cast<const unsigned char*>(q.data()), q.size(), info, ip, false, out, &uni));
+    q = dns_q(0, std::string("\xc0\x0c", 2), 1, 1);
+    CHECK(!mico::mdns_answer(reinterpret_cast<const unsigned char*>(q.data()), q.size(), info, ip, false, out, &uni));
+    // Service records only when there is a web port.
+    info.port = 0;
+    q = dns_q(0, std::string("\x05_http\x04_tcp\x05local\0", 18), 12, 1);
+    CHECK(!mico::mdns_answer(reinterpret_cast<const unsigned char*>(q.data()), q.size(), info, ip, false, out, &uni));
+    // Announcement / goodbye.
+    out = mico::mdns_announce(info, ip, 0);
+    rr = dns_rrs(out, an, ar, a_ip);
+    CHECK(an == 1 && rr.size() == 1 && out.substr(out.size() - 10, 4) == std::string(4, '\0'));
+}
+
 int main() {
+    test_mdns();
     test_runtime_extras();
     test_parse_recognition();
     test_ring_buffer();

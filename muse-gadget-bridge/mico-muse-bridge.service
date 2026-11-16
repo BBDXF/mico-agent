@@ -1,0 +1,25 @@
+[Unit]
+Description=mico-agent Muse Gadget HTTP bridge
+After=network-online.target musegadget.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=musegadget
+Group=musegadget
+WorkingDirectory=%h
+EnvironmentFile=/etc/mico-muse-bridge.env
+Environment=MUSE_BRIDGE_HOST=0.0.0.0
+Environment=MUSE_BRIDGE_PORT=8765
+Environment=MUSE_WAIT_SECONDS=70
+Environment=MUSEGADGET_BIN=/usr/local/bin/musegadget
+ExecStart=/usr/bin/python3 /opt/mico-muse-bridge/bridge.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

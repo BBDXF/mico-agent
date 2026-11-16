@@ -785,8 +785,11 @@ def web_tests(binary, script, env, cfg_path):
         finally:
             proc.terminate()
             out, _ = proc.communicate(timeout=5)
-        if "player_play_url" not in out or "127.0.0.1:%d/stream/fnos/g1?token=tk" % port not in out:
-            fail("proxy playback url", out)
+        with open(logfile) as f:
+            playback_log = f.read()
+        expected_url = "127.0.0.1:%d/stream/fnos/g1?token=tk" % port
+        if "player_play_url" not in playback_log or expected_url not in playback_log:
+            fail("proxy playback url", playback_log[-8000:] or out)
 
 
 def log_tests(js, logfile):
@@ -1264,7 +1267,8 @@ def main():
         fail("config not applied: %r" % req)
     names = {t["function"]["name"] for t in req["tools"]}
     expected = {"run_shell", "http_request", "music_search", "music_play", "music_stop",
-                "music_now_playing", "get_time"}
+                "music_now_playing", "music_playlist_search", "music_playlist_play",
+                "music_repeat", "get_time"}
     if names != expected:
         fail("advertised tools mismatch: %r" % names)
 

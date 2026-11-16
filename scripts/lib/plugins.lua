@@ -9,7 +9,7 @@ local M = {}
 M.plugins = {}  -- name -> { mod = table, file = path, enabled = bool, error = string }
 M.order = {}
 -- Plugins shipped with mico-agent: can be disabled but not deleted.
-M.builtin = { fnos = true, bili = true }
+M.builtin = { fnos = true, bili = true, synology = true }
 
 function M.dir()
   local d = config.get("plugins.dir")

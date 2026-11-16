@@ -59,9 +59,11 @@ details.tl{margin:4px 0 0 2px;font-size:13px}details.tl summary{cursor:pointer;c
 .pl{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--line)}.pl:last-child{border:0}
 .tabs2{display:flex;gap:6px;margin-bottom:10px}.tabs2 .btn.on{border-color:var(--pri);color:var(--pri)}
 .fld{padding:12px 0;border-top:1px solid var(--line)}.card>h3+.fld{border-top:0;padding-top:0}
+.muse-routes{display:grid;gap:10px}.muse-route{display:grid;grid-template-columns:minmax(120px,1fr) minmax(180px,2fr) 100px auto;gap:8px;align-items:end;padding:10px;border:1px solid var(--line);border-radius:8px;background:#fafbfc}.muse-route label{font-size:12px;color:var(--mut)}.muse-route input{margin-top:4px}.muse-route .btn{margin-bottom:1px}
 .fld .fh{gap:6px;margin-bottom:2px}.fld .fhelp{margin-bottom:6px}.fld textarea{resize:vertical;min-height:120px}
 .fld.chg{box-shadow:inset 3px 0 0 var(--pri);padding-left:10px;margin-left:-10px}.fld.bad input,.fld.bad textarea,.fld.bad select{border-color:var(--err)}
 .b-mod{background:#fff1e6;color:var(--pri2)}.b-chg{background:var(--pri);color:#fff}.b-rs{background:#e8f0ff;color:var(--blue)}
+.b-muse{background:#f1e9ff;color:#7a3fd1}
 .cfg-top{position:sticky;top:50px;z-index:3}#cfgDirty.warn{color:var(--pri2);font-weight:600}
 details.adv summary{cursor:pointer}details.adv[open] summary{margin-bottom:8px}
 .tl-card{padding:14px 0;border-bottom:1px solid var(--line)}.tl-card:last-child{border:0}.tl-card.off{opacity:.62}
@@ -71,7 +73,7 @@ details.adv summary{cursor:pointer}details.adv[open] summary{margin-bottom:8px}
 .stats{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mut)}.stats b{color:var(--fg);font-weight:600}
 pre.res{background:#f6f8fa;border:1px solid var(--line);border-radius:8px;padding:10px;max-height:40vh;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:12.5px;margin:6px 0}
 .hide{display:none!important}
-@media(max-width:600px){main{padding:10px}.bub{max-width:92%}.card{padding:12px}nav a{padding:12px 10px}}
+@media(max-width:600px){main{padding:10px}.bub{max-width:92%}.card{padding:12px}nav a{padding:12px 10px}.muse-route{grid-template-columns:1fr 1fr}.muse-route label:first-child,.muse-route label:nth-child(2){grid-column:span 2}}
 </style></head><body>
 <header><div class="hw"><div class="logo"><b>Mico</b> Agent</div><nav id="nav">
 <a data-t="status">状态</a><a data-t="conv">对话</a><a data-t="config">配置</a><a data-t="tools">工具</a><a data-t="plugins">插件</a></nav></div></header>
@@ -126,11 +128,13 @@ function aboutCard(v){
 async function loadStatus(){
   const el=$('#t-status');
   try{const s=await api('/api/status');const v=s.version||{},p=s.playback||{};
+    const q=s.playback_queue&&typeof s.playback_queue==='object'?s.playback_queue:null;
+    const qtext=q?`${q.name} (${q.index}/${q.count}) · ${q.repeat_mode==='one'?'单曲循环':q.repeat_mode==='all'?'歌单循环':'顺序播放'}`:'无';
     el.innerHTML=`<div class="card ver"><h3>版本信息</h3><div class="big">${esc(v.app||'未知版本')}</div>
     <div class="grid" style="margin-top:12px">${kv('Git',v.git)}${kv('构建时间',v.build_time)}${kv('Lua',v.lua)}${kv('curl',v.curl)}${kv('编译器',v.compiler)}</div></div>
     <div class="card"><div class="row"><h3 class="sp" style="margin:0">运行状态</h3><button class="btn s" onclick="loadStatus()">刷新</button></div>
     <div class="grid" style="margin-top:12px">${kv('启动时间',s.started?fmtTime(s.started):'')}${kv('已运行',fmtDur(s.uptime))}${kv('Web 端口',s.web_port)}
-    ${kv('配置文件',s.config_path)}${kv('索引大小',s.index_size)}${kv('对话数',s.conversations)}${kv('正在播放',s.now_playing||'无')}</div></div>
+    ${kv('配置文件',s.config_path)}${kv('索引大小',s.index_size)}${kv('对话数',s.conversations)}${kv('正在播放',s.now_playing||'无')}${kv('播放队列',qtext)}</div></div>
     ${indexCard(s)}
     <div class="card hide" id="saveCard"></div>
     <div class="card"><h3>播放</h3><div class="grid">${kv('模式',p.mode==='download'?'下载后播放 (download)':p.mode==='proxy'?'边下边播 (proxy)':p.mode)}${kv('缓冲',p.buffer_kb!=null?p.buffer_kb+' KB':'')}${kv('最大下载',p.max_mb!=null?p.max_mb+' MB':'')}</div></div>
@@ -172,6 +176,7 @@ async function syncIndex(){if(idxSyncing)return;idxSyncing=true;const b=$('#idxB
 /* conversations */
 let since=0,convTimer=null;const turns=new Map();
 const ICON={tool:'🔧',llm:'🧠',play:'🎵',tts:'🔊',info:'ℹ️'},KN={tool:'工具',llm:'模型',play:'播放',tts:'语音',info:'信息'};
+const ROUTE={fast:'⚡ 快速匹配',llm:'🧠 大模型',ignored:'↩ 交给小爱',music_control:'🎵 播放控制',playlist:'🎶 歌单',muse:'🪄 Muse'};
 function pretty(x){if(x==null)return'';if(typeof x==='string'){try{x=JSON.parse(x)}catch(e){return x}}return JSON.stringify(x,null,2)}
 function turnHTML(t){
   const steps=t.steps||[],run=t.status==='running';
@@ -182,7 +187,7 @@ function turnHTML(t){
   return `<div class="u"><div class="bub">${esc(t.user)}</div></div>
   <div class="meta"><span class="badge b-${esc(t.source)}">${t.source==='voice'?'🎤 语音':'⌨ 网页'}</span>${fmtTime(t.time)}</div>
   <div class="a"><div class="bub${t.error?' err':''}">${reply}</div></div>
-  <div class="meta">${t.route?`<span class="badge b-${esc(t.route)}">${t.route==='fast'?'⚡ 快速匹配':'🧠 大模型'}</span>`:''}${t.duration_ms!=null&&!run?`<span class="badge">⏱ ${fmtMs(t.duration_ms)}</span>`:''}</div>${tl}`;
+  <div class="meta">${t.route?`<span class="badge b-${esc(t.route)}">${ROUTE[t.route]||esc(t.route)}${t.route==='muse'&&t.route_name?' · '+esc(t.route_name):''}</span>`:''}${t.duration_ms!=null&&!run?`<span class="badge">⏱ ${fmtMs(t.duration_ms)}</span>`:''}</div>${tl}`;
 }
 async function pollConv(){
   try{const r=await api('/api/conversations?since='+since)||[];const list=(Array.isArray(r)?r:(r.conversations||[])).slice().sort((a,b)=>a.id-b.id);const chat=$('#chat');
@@ -211,7 +216,7 @@ async function testSave(){const m=$('#saveTestMsg'),b=$('#saveTest');
     m.innerHTML=r.ok?`<span style="color:var(--ok)">连接成功 (HTTP ${esc(r.status)})</span>`:`<span style="color:var(--err)">${esc(r.error||('连接失败'+(r.status?` (HTTP ${r.status})`:'')))}</span>`}
   catch(e){m.innerHTML=`<span style="color:var(--err)">${esc(e.message)}</span>`}
   b.disabled=false}
-const GRP={llm:'大模型',agent:'智能体',fast:'快速点歌',playback:'播放',save:'边播边存',web:'网页'},GORD=['llm','agent','fast','playback','save','web'];
+const GRP={llm:'大模型',agent:'智能体',fast:'快速点歌',muse:'Muse 路由',playback:'播放',save:'边播边存',web:'网页'},GORD=['llm','agent','fast','muse','playback','save','web'];
 const getP=(o,k)=>k.split('.').reduce((a,x)=>a==null?undefined:a[x],o);
 function setP(o,k,v){const ps=k.split('.');let c=o;ps.slice(0,-1).forEach(x=>{if(c[x]==null||typeof c[x]!=='object')c[x]={};c=c[x]});c[ps[ps.length-1]]=v}
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
@@ -231,7 +236,8 @@ async function loadConfig(){const el=$('#t-config');let r;
     <textarea class="mono" id="cfgRaw" rows="16" spellcheck="false"></textarea><div class="row" style="margin-top:8px"><span class="sp"></span><button class="btn p" id="cfgRawSave">保存 JSON</button></div><div id="cfgRawMsg"></div></details>`;
   $('#cfgRaw').value=JSON.stringify(CS.cfg,null,2);
   el.querySelectorAll('[data-k]').forEach(i=>{i.oninput=i.onchange=()=>{fieldState(i.dataset.k);dirty()}});
-  el.querySelectorAll('[data-rst]').forEach(b=>b.onclick=()=>{const k=b.dataset.rst;CS.reset=CS.reset||new Set();CS.reset.add(k);setInput(k,getP(CS.def,k));fieldState(k);dirty()});
+  el.querySelectorAll('[data-rst]').forEach(b=>b.onclick=()=>{const k=b.dataset.rst;CS.reset=CS.reset||new Set();CS.reset.add(k);setInput(k,getP(CS.def,k));if(k==='muse.routes')mountMuseRoutes();fieldState(k);dirty()});
+  mountMuseRoutes();
   $('#cfgReset').onclick=loadConfig;$('#cfgSave').onclick=saveSchema;
   $('#cfgRawSave').onclick=()=>{let o;try{o=JSON.parse($('#cfgRaw').value)}catch(e){$('#cfgRawMsg').innerHTML=`<div class="msg e">JSON 格式错误：${esc(e.message)}</div>`;return}saveCfg(o,'#cfgRawMsg')};
   CS.reset=new Set();CS.schema.forEach(f=>fieldState(f.key));
@@ -242,6 +248,7 @@ function fieldHTML(f){const k=f.key,id=fid(k),v=curVal(f),d=getP(CS.def,k),a=`id
   const ph=d==null||d===''?'':`默认：${f.type==='secret'?'（空）':fmtV(d)}`;
   if(f.type==='bool')inp=`<label class="row" style="gap:10px"><span class="tg"><input type="checkbox" ${a}${v?' checked':''}><span></span></span><span class="mut small">默认：${fmtV(!!d)}</span></label>`;
   else if(f.type==='enum')inp=`<select ${a}>${(f.options||[]).map(o=>{const ov=typeof o==='object'?o.value:o,ol=typeof o==='object'?(o.label||o.value):o;return `<option value="${esc(ov)}"${ov===v?' selected':''}>${esc(ol)}${ov===d?'（默认）':''}</option>`}).join('')}</select>`;
+  else if(k==='muse.routes')inp=`<div class="muse-routes" id="museRouteEditor"></div><textarea class="mono" ${a} hidden>${esc(JSON.stringify(Array.isArray(v)?v:[],null,2))}</textarea>`;
   else if(f.type==='json')inp=`<textarea class="mono" ${a} rows="4" spellcheck="false" placeholder="${esc(ph)}">${esc(v==null?'':JSON.stringify(v,null,2))}</textarea>`;
   else if(f.type==='text')inp=`<textarea ${a} rows="7" placeholder="${esc(ph)}">${esc(v==null?'':v)}</textarea>`;
   else if(f.type==='number')inp=`<input type="number" ${a} value="${esc(v==null?'':v)}"${f.min!=null?` min="${f.min}"`:''}${f.max!=null?` max="${f.max}"`:''} placeholder="${esc(ph)}">`;
@@ -254,6 +261,29 @@ function fieldHTML(f){const k=f.key,id=fid(k),v=curVal(f),d=getP(CS.def,k),a=`id
     ${f.help||rng?`<div class="mut small fhelp">${esc(f.help||'')}${f.help&&rng?' · ':''}${rng}</div>`:''}${inp}
     ${CS.env.has(k)?`<div class="msg i">⚠ 由环境变量覆盖，当前生效值：<b class="mono">${esc(f.type==='secret'?'******':fmtV(getP(CS.eff,k)))}</b>（这里的修改在去掉环境变量前不会生效）</div>`:''}
     <div class="ferr"></div></div>`}
+function readMuseRoutes(){const e=document.getElementById(fid('muse.routes'));if(!e)return[];try{const r=JSON.parse(e.value||'[]');return Array.isArray(r)?r:[]}catch(_){return[]}}
+function syncMuseRoutes(){
+  const root=$('#museRouteEditor'),store=document.getElementById(fid('muse.routes'));if(!root||!store)return;
+  const routes=[...root.querySelectorAll('.muse-route')].map(row=>({
+    name:row.querySelector('[data-muse-field="name"]').value.trim(),
+    host:row.querySelector('[data-muse-field="host"]').value.trim(),
+    port:Number(row.querySelector('[data-muse-field="port"]').value||8765)
+  }));
+  store.value=JSON.stringify(routes,null,2);fieldState('muse.routes');dirty();
+}
+function mountMuseRoutes(){
+  const root=$('#museRouteEditor'),store=document.getElementById(fid('muse.routes'));if(!root||!store)return;
+  const routes=readMuseRoutes();
+  root.innerHTML=`${routes.map((r,i)=>`<div class="muse-route" data-route="${i}">
+    <label>语音名字（说“问问<名字>”或“请问<名字>”）<input type="text" data-muse-field="name" value="${esc(r.name||'')}" placeholder="小牛奶"></label>
+    <label>Linux 主机名或 IP<input type="text" data-muse-field="host" value="${esc(r.host||'')}" placeholder="muse-a.local 或 192.168.1.20"></label>
+    <label>端口<input type="number" data-muse-field="port" min="1" max="65535" value="${esc(r.port||8765)}"></label>
+    <button class="btn s d" type="button" data-muse-delete>删除</button></div>`).join('')||'<div class="mut small">还没有 Muse 路由。每个名字指向一个已配对的 Linux Gadget 主机。</div>'}
+    <div><button class="btn s" type="button" id="museRouteAdd"${routes.length>=8?' disabled':''}>＋ 添加 Muse 路由</button><span class="mut small"> 最多 8 个</span></div>`;
+  root.querySelectorAll('[data-muse-field]').forEach(i=>i.oninput=i.onchange=syncMuseRoutes);
+  root.querySelectorAll('[data-muse-delete]').forEach(b=>b.onclick=()=>{b.closest('.muse-route').remove();syncMuseRoutes();mountMuseRoutes()});
+  $('#museRouteAdd').onclick=()=>{const next=readMuseRoutes();next.push({name:'',host:'',port:8765});store.value=JSON.stringify(next,null,2);mountMuseRoutes();fieldState('muse.routes');dirty();root.querySelector('.muse-route:last-of-type [data-muse-field="name"]')?.focus()};
+}
 function readInput(f){const e=document.getElementById(fid(f.key));if(!e)return undefined;
   if(f.type==='bool')return e.checked;if(f.type==='json'){const t=e.value.trim();if(t==='')return null;try{return JSON.parse(t)}catch(_){return t}}if(f.type==='number')return e.value===''?null:Number(e.value);return e.value}
 function setInput(k,v){const e=document.getElementById(fid(k));if(!e)return;if(e.type==='checkbox')e.checked=!!v;else e.value=v==null?'':(typeof v==='object'?JSON.stringify(v,null,2):v)}

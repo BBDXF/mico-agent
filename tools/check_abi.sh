@@ -1,5 +1,5 @@
 #!/bin/sh
-# Check an ELF binary is loadable on the Xiaomi LX06 firmware:
+# Check an ELF binary against the project's LX06/L06A and OH2P armhf baseline:
 #   NEEDED libs within an allow-list, GLIBC_ <= 2.25, GLIBCXX_ <= 3.4.22, CXXABI <= 1.3.10.
 # Usage: tools/check_abi.sh path/to/mico-agent [readelf]
 set -eu

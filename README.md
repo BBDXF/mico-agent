@@ -1,7 +1,7 @@
 # mico-agent
 
 运行在**小爱音箱内部**的轻量 AI Agent。不需要 NAS 上的额外服务、不需要中转服务器：一个约 470 KB 的 C++ 二进制 + 几个 Lua 脚本，
-直接在音箱里听懂你的话、调用大模型和工具、从飞牛 NAS 或在线音乐源点歌播放。
+直接在音箱里听懂你的话、调用大模型和工具、从群晖 Audio Station、飞牛 NAS 或在线音乐源点歌播放。
 
 仓库：<https://github.com/BBDXF/mico-agent>
 
@@ -9,7 +9,7 @@
 
 | | 传统 AI Agent（LangChain / Dify / 各类 claw…） | mico-agent |
 |---|---|---|
-| 运行位置 | 服务器、PC 或 NAS 上的容器，音箱只是麦克风和喇叭 | **音箱本身**（armv7，256 MB 内存，`/data` 只有约 10 MB） |
+| 运行位置 | 服务器、PC 或 NAS 上的容器，音箱只是麦克风和喇叭 | **音箱本身**（ARMhf 用户态；OH2P 内核可显示 aarch64） |
 | 体积与依赖 | Python/Node 运行时，几百 MB 起 | 单个 C++14 二进制，只链接固件自带的 glibc / libstdc++ / libcurl |
 | 语音入口 | 需要额外的语音桥接或抓包 | 直接跟随固件的语音识别日志（`instruction.log`） |
 | 点歌 | 每句话都走大模型 | **快路径**：“播放 X”在本地拼音模糊搜索后直接播放，毫秒级、不消耗 token；只有歧义或闲聊才交给大模型 |
@@ -21,17 +21,19 @@
 
 ## 使用场景
 
-- 用自然语言在音箱上点播飞牛 NAS（fnOS 飞牛音乐）里的本地曲库，口音、同音字也能找对。
+- 用自然语言在音箱上点播群晖 Audio Station 或飞牛 NAS（fnOS 飞牛音乐）里的本地曲库，口音、同音字也能找对。
 - 本地没有的歌，说“在线播放 稻香”，由在线音乐源插件获取在线音乐播放。
 - 让音箱回答问题、查时间、调用任意 HTTP 接口，或在音箱 Linux 上执行命令（可关闭）。
 - 通过网页查看对话的每一步（快路径决策、大模型往返、工具调用耗时、播放地址），在线改配置、插件和工具。
 
 ## 功能
 
-- **语音接管**（`takeover.mode`，默认 `off` 关闭）：`off` 不接管任何语音，小爱原生助手（闹钟、智能家居等）照常工作；`music` 只接管点歌（快路径能直接播放的请求）和以接管关键词（`takeover.keywords`，默认“请问,问问AI,小爱AI”）开头的话；`all` 接管所有语音。只有真正接管时才暂停原生助手；网页提问不受模式影响。
+- **语音接管**（`takeover.mode`，默认 `off` 关闭）：`off` 不接管任何语音，小爱原生助手（闹钟、智能家居等）照常工作；`music` 接管点歌（快路径未命中时交给大模型继续搜索）和以接管关键词（`takeover.keywords`，默认“请问,问问AI,小爱AI”）开头的话，也支持停止播放；关键词匹配忽略空格；`all` 接管所有语音。只有真正接管时才暂停原生助手；网页提问不受模式影响。
+- **群晖歌单和循环**：Audio Station 歌单按顺序加入音箱本地队列，默认播放一遍；播放中说“单曲循环”“歌单循环”“取消循环”“下一首”可控制队列。说“停止播放”会停止当前歌曲并清空剩余队列；队列播放期间即使把语音接管改为 `off`，停止命令仍可用。
+- **Muse Gadget 语音路由**：配置页可添加多个名字与 Linux 主机地址，例如“问问小牛奶”路由到指定 Gadget；回复由小爱音箱播报。Linux 主机需另运行桥接服务（协议见开发文档），OH2P 不直接安装 Muse SDK。
 - **Agent**：OpenAI 兼容接口（默认 SiliconFlow `Qwen/Qwen3-8B`），多轮工具调用。
-- **内置工具**：`run_shell`、`http_request`、`music_search`、`music_play`、`music_stop`、`music_now_playing`；自定义工具放在 `scripts/tools/`。
-- **音乐插件**：`fnos`（本地源，飞牛音乐曲库，自动跳过音箱解不了的 APE/WMA/DSD/ALAC）、在线音乐源插件（获取在线音乐，只选普通 AAC 音轨）。
+- **内置工具**：`run_shell`、`http_request`、`music_search`、`music_play`、`music_playlist_search`、`music_playlist_play`、`music_repeat`、`music_stop`、`music_now_playing`；自定义工具放在 `scripts/tools/`。
+- **音乐插件**：`synology`（群晖 DSM 7 Audio Station 曲库）、`fnos`（飞牛音乐曲库，自动跳过音箱解不了的 APE/WMA/DSD/ALAC）、在线音乐源插件（获取在线音乐，只选普通 AAC 音轨）。
 - **曲库索引**：启动时同步、定时同步、搜不到时自动补同步，也可在网页上手动同步。
 - **边播边存**（默认关闭）：播放在线音乐源的歌曲时，同时经 WebDAV 保存到 NAS（按时长 / 关键词过滤，自动去重；保存前由大模型规范歌手/歌名并修正同音字，歌手按本地曲库写法校正，非原曲或无法确定歌手时不保存），之后本地曲库即可直接播放。
 - **Web 控制台**（默认 `:8080`）：状态 / 对话 / 配置 / 工具 / 插件，可设访问令牌。
@@ -41,8 +43,9 @@
 
 ### 1. 准备
 
-- 已 root 并开启 SSH 的小爱音箱 Pro（LX06 / L06A，固件 1.77.6 已验证依赖兼容）。
+- 已 root 并开启 SSH 的小爱音箱 Pro。LX06 / L06A 固件 1.77.6 已验证；OH2P 的 armhf 加载器、语音日志和播放接口已按设备信息适配，仍需在目标音箱上验证实际播放。
 - 一个 OpenAI 兼容的大模型 API Key。
+- 群晖 DSM 7 上已安装 Audio Station；建议准备一个只有音乐库读取权限的 DSM 账号。
 - 可选：飞牛 NAS 上的飞牛音乐账号。
 
 ### 2. 下载
@@ -52,20 +55,37 @@
 ### 3. 安装到音箱
 
 ```sh
-scp mico-agent-*-armhf.tar.gz root@<音箱IP>:/data/
-ssh root@<音箱IP>
+scp -o HostKeyAlgorithms=+ssh-rsa mico-agent-*-armhf.tar.gz root@<音箱IP>:/data/
+ssh -o HostKeyAlgorithms=+ssh-rsa root@<音箱IP>  # 若 SSH 报旧主机密钥算法不匹配时使用
 cd /data && tar xzf mico-agent-*-armhf.tar.gz && mv mico-agent-*/ mico-agent && cd mico-agent
+sh tools/check_oh2p.sh              # OH2P 可先运行；只读检查，不会输出语音识别内容
 cp config.example.json config.json
-vi config.json                      # 填 llm.api_key，可改 model / base_url
-vi scripts/plugins/fnos.lua         # 顶部 M.config 填 NAS 地址、账号、密码（也可稍后在网页里改）
+vi config.json                      # 填 llm.api_key、web.token；建议 shell.enabled=false
+cat > synology.env <<'EOF'          # 本机保存 DSM 连接参数，不要提交到 Git
+export MICO_SYNO_URL='https://nas.example.com:5001'
+export MICO_SYNO_USER='mico-agent'
+export MICO_SYNO_PASS='替换为只读账号密码'
+# 如该账号启用了 2FA，首次登录时再加当前验证码：
+# export MICO_SYNO_OTP='123456'
+EOF
+chmod 600 synology.env
+. ./synology.env
 ./mico-agent -c /data/mico-agent/config.json >/dev/null 2>&1 &
 ```
+
+推荐用权限为 `600` 的本机 `synology.env` 保存 DSM 地址和只读账号，不要把密码写进插件源码或提交到 Git；也可以在 `scripts/plugins/synology.lua` 的 `M.config` 中配置。DSM 地址不要在末尾加 `/webapi`。插件启动后会查询 DSM 实际提供的 API 版本，通过 Audio Station 登录、分页读取曲目并用 DSM 流接口播放；FLAC 会保留，元数据能识别出的不支持格式会跳过。若不使用飞牛，可在配置中禁用 `plugins.enabled.fnos`。
+
+如果 DSM 返回 Auth API 403，表示该账号需要两步验证码。首次登录时在 `synology.env` 临时设置 `MICO_SYNO_OTP` 为当前 6 位验证码；插件会尝试保存 DSM 返回的设备令牌到 `/data/mico-agent/synology.device_id`，之后自动复用。首次同步成功后可从 `synology.env` 删除 OTP 行。
+
+OH2P 上 `uname -m` 显示 `aarch64` 不代表要下载 64 位包；适配检查看到的是 `/lib/ld-linux-armhf.so.3`，应使用项目的 `armhf` 包。OH2P 的 `mphelper` 可能位于 `/usr/bin/mphelper`，即使不在 SSH 的 `PATH` 中也能被程序找到；如果该文件缺失或不可执行，mico-agent 会跳过暂停原生播放并继续运行。
 
 运行日志写到 `/tmp/mico-agent.log`（内存盘，按 `log.max_kb` 自动轮转，有上限），可通过 `GET /api/logs?lines=200` 查看。
 不要把输出重定向到 `/data` 下的文件，否则会无限增长占满空间。
 
 打开 `http://mico.local:8080`（或 `http://<音箱IP>:8080`），在网页里继续配置。
 **语音接管默认关闭**（启动日志会提示 `takeover: off`）：在网页“配置”页把“语音接管模式”（`takeover.mode`）改为 `music`（推荐，只接管点歌和关键词开头的话）或 `all`，保存即生效；也可在 `config.json` 写 `"takeover": {"mode": "music"}`。
+Muse 路由也在“配置”页：每条填写名字、Linux 主机名/IP 和端口（默认 `8765`），再设置 Gadget 桥接令牌。Linux 桥接服务就绪后，说“问问<名字>”“请问问<名字>”或“请问<名字>”，再接上问题。
+群晖 Audio Station 歌单可说“播放歌单<名称>”或“播放<名称>歌单”；默认顺序播放一遍。播放时说“单曲循环”“歌单循环”“取消循环”“下一首”或“停止播放”。
 主机名可在配置 `mdns.hostname` 修改；部分 Android 浏览器不能解析 `.local`，此时请用 IP 访问。确认可用后，把启动命令加入开机脚本（例如 `/data/` 下的自启动脚本，按你的 root 方案而定），建议设置 `web.token`。
 
 > `/data` 空间很小且可能被系统清理，请自行备份 `config.json` 和改过的插件。
@@ -93,6 +113,7 @@ make CROSS=arm-linux-gnueabihf- dist  # 需要 GCC 6 / glibc ≤ 2.25 的交叉�
 
 - 原厂播放器基于精简版 FFmpeg：支持 MP3 / FLAC / AAC(m4a) / OGG / Opus / WAV，不支持 APE、WMA、DSD、ALAC、杜比音轨。
 - 在线音乐源的音频格式（分段 m4a）的真机播放、飞牛是否强制 authx 签名，仍待更多设备验证。
+- Synology 插件已按 DSM Audio Station 的 Song / Stream API 接入；参考设备的 API.Info 返回 Song v3、Stream v2。实际 DSM 登录和 FLAC 串流仍需用专用只读账号在目标 NAS 上验证。
 - 边播边存：fnOS WebDAV 是否接受分块上传（源未给出文件大小时）、保存的 m4a 能否被飞牛音乐识别，待真机验证。
 - 边播边存的歌名规范化在主线程同步调用大模型（默认超时 8 秒），期间新的语音指令会稍有延迟。
 

@@ -1,3 +1,5 @@
 build/
 config.json
+synology.env
+synology.device_id
 build-armhf/

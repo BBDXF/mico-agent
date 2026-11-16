@@ -18,6 +18,15 @@
     "min_score": 0.6,
     "margin": 0.15
   },
+  "takeover": {
+    "mode": "off",
+    "keywords": "请问,问问AI,小爱AI"
+  },
+  "muse": {
+    "routes": [],
+    "bridge_token": "",
+    "timeout_ms": 90000
+  },
   "index": {
     "sync_on_start": true,
     "sync_interval_min": 360,
@@ -34,7 +43,8 @@
     "dir": "",
     "enabled": {
       "fnos": true,
-      "bili": true
+      "bili": true,
+      "synology": true
     }
   },
   "playback": {

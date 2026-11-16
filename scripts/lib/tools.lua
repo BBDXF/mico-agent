@@ -3,8 +3,9 @@ local fnmusic = require("fnmusic")
 local speaker = require("speaker")
 local plugins = require("plugins")
 local config = require("config")
+local synology_playlist = require("synology_playlist")
 
-local M = { online_seen = {}, online_seen_n = 0 }  -- recent online results by id (title/duration)
+local M = { online_seen = {}, online_seen_n = 0, playback_generation = 0, queue_state = nil }
 
 local function truncate(s, n)
   if #s <= n then return s end
@@ -231,37 +232,261 @@ end
 
 -- Plays "<plugin>:<id>". Default: speaker streams from our local proxy;
 -- playback.mode = "download" (or no web server) downloads to /tmp first.
-function M.play_track(track)
+function M.play_track(track, opts)
+  opts = opts or {}
+  if not opts.from_queue then
+    M.queue_state = {
+      tracks = { track }, index = 1, name = track.title or "",
+      repeat_mode = "off", active = true, kind = "single",
+    }
+  end
   local name, raw = plugins.split_id(track.id)
   local p = plugins.get(name)
-  if not p then return nil, "插件不可用: " .. name end
+  if not p then if not opts.from_queue then M.queue_state = nil end; return nil, "插件不可用: " .. name end
   local port = mico.web_port()
   local mode = config.get("playback.mode") or "proxy"
+  local q = M.queue_state
+  if q and q.active then q.status_supported = port and mode ~= "download" or false end
   local ok, err
   if port and mode ~= "download" then
     local url = "http://127.0.0.1:" .. port .. "/stream/" .. name .. "/" .. urlencode(raw)
     local token = config.get("web.token") or ""
     if token ~= "" then url = url .. "?token=" .. urlencode(token) end
     speaker.stop()
+    -- The XiaoAi cloud answer can arrive while the LLM is resolving an
+    -- ambiguous request. Pause it again immediately before starting our track.
+    speaker.pause_native()
     local out, code = speaker.play_url(url)
     if code == 0 then ok = true else err = "play_url failed: " .. tostring(out) end
   else
     local url, headers = plugins.stream(name, raw)
-    if not url then return nil, headers end
+    if not url then if not opts.from_queue then M.queue_state = nil end; return nil, headers end
     speaker.max_bytes = (tonumber(config.get("playback.max_mb")) or 30) * 1024 * 1024
     ok, err = speaker.play_stream(url, headers)
   end
-  if not ok then return nil, err end
+  if not ok then if not opts.from_queue then M.queue_state = nil end; return nil, err end
   if p.on_play then pcall(p.on_play, raw) end
+  M.playback_generation = M.playback_generation + 1
   track.plugin = name
   M.now_playing = track
   M.now_playing_since = os.time()
+  local q = M.queue_state
+  if q and q.active then
+    q.started_at = os.time()
+    q.duration = tonumber(track.duration)
+    q.seen_playing = false
+    q.last_status = nil
+    q.current = track
+  end
   local pt = p.type
   if pt == "online" then
     local ok2, e2 = pcall(function() require("saver").maybe_save(track, track.save) end)
     if not ok2 then mico.log("save:", e2) end
   end
   return true
+end
+
+function M.stop_playback()
+  M.queue_state = nil
+  M.now_playing = false
+  M.now_playing_since = nil
+  speaker.pause_native()
+  speaker.stop()
+  return true
+end
+
+local function queue_start_index(index)
+  local q = M.queue_state
+  if not q or not q.active or not q.tracks[index] then return nil, "播放队列为空" end
+  q.index = index
+  local ok, err = M.play_track(q.tracks[index], { from_queue = true })
+  if not ok then
+    mico.log("queue play failed:", tostring(err or "unknown error"))
+    M.stop_playback()
+    return nil, err
+  end
+  return true
+end
+
+function M.start_queue(tracks, name)
+  if type(tracks) ~= "table" or #tracks == 0 then return nil, "歌单没有可播放曲目" end
+  M.queue_state = {
+    tracks = tracks, index = 1, name = tostring(name or "歌单"),
+    repeat_mode = "off", active = true, kind = "playlist",
+  }
+  local ok, err = queue_start_index(1)
+  if not ok then return nil, err end
+  return true
+end
+
+local function queue_advance(replay_current)
+  local q = M.queue_state
+  if not q or not q.active then return nil, "没有正在播放的队列" end
+  if replay_current or q.repeat_mode == "one" then return queue_start_index(q.index) end
+  local next_index = q.index + 1
+  if next_index > #q.tracks then
+    if q.repeat_mode == "all" then next_index = 1
+    else
+      M.queue_state = nil
+      M.now_playing = false
+      M.now_playing_since = nil
+      mico.log("queue finished:", q.name)
+      return true, "finished"
+    end
+  end
+  return queue_start_index(next_index)
+end
+
+function M.next_track()
+  local q = M.queue_state
+  if not q or not q.active then return nil, "没有正在播放的队列" end
+  local next_index = q.index + 1
+  if next_index > #q.tracks then
+    if q.repeat_mode == "all" then next_index = 1
+    else
+      M.stop_playback()
+      return true, "finished"
+    end
+  end
+  return queue_start_index(next_index)
+end
+
+function M.set_repeat_mode(mode)
+  if mode ~= "off" and mode ~= "one" and mode ~= "all" then return nil, "循环模式无效" end
+  local q = M.queue_state
+  if not q or not q.active then return nil, "当前没有播放内容" end
+  q.repeat_mode = mode
+  M.playback_generation = M.playback_generation + 1
+  mico.log("playback repeat:", mode)
+  return true
+end
+
+function M.queue_info()
+  local q = M.queue_state
+  if not q or not q.active then return false end
+  return {
+    kind = q.kind, name = q.name, index = q.index, count = #q.tracks,
+    repeat_mode = q.repeat_mode, current = q.current and q.current.title or "",
+  }
+end
+
+function M.queue_active()
+  return M.queue_state ~= nil and M.queue_state.active == true
+end
+
+function M.playback_tick()
+  local q = M.queue_state
+  if not q or not q.active or not q.started_at then return end
+  local elapsed = os.time() - q.started_at
+  local status = q.status_supported and speaker.play_status() or nil
+  if status == "playing" then q.seen_playing = true end
+  if status == "paused" then return end
+
+  local status_label = status or "unavailable"
+  if q.last_status ~= status_label then
+    q.last_status = status_label
+    mico.log("queue playback status:", q.index .. "/" .. #q.tracks, status_label)
+  end
+
+  local ended = false
+  local end_reason
+  if q.seen_playing and status == "stopped" then
+    ended = true
+    end_reason = "player_stopped"
+  elseif status == nil and q.duration and q.duration > 0 and elapsed >= q.duration + 4 then
+    ended = true
+    end_reason = "duration_fallback"
+  elseif status == "playing" and q.duration and q.duration > 0 and elapsed >= q.duration + 15 then
+    -- Some OH2P builds keep reporting "playing" after a streamed URL reaches
+    -- EOF. Use the Audio Station duration as a watchdog so the queue can move on.
+    ended = true
+    end_reason = "duration_watchdog"
+  elseif status == "stopped" and elapsed >= 8 then
+    ended = true
+    end_reason = "stopped_before_playing"
+  end
+  if ended then
+    mico.log("queue track ended:", q.index .. "/" .. #q.tracks, end_reason or "unknown")
+    local ok, err = queue_advance(false)
+    if not ok then mico.log("queue advance failed:", tostring(err or "unknown error")) end
+  end
+end
+
+local function compact_playlist_name(s)
+  return tostring(s or ""):gsub("%s+", ""):gsub("　", ""):lower()
+end
+
+function M.search_playlists(query, limit)
+  local playlists, err = synology_playlist.list_playlists()
+  if not playlists then return nil, err end
+  M.last_playlist_names = {}
+  for i, item in ipairs(playlists) do
+    if i <= 8 then M.last_playlist_names[#M.last_playlist_names + 1] = item.name end
+  end
+  if #playlists == 0 then return {}, nil end
+  local q = compact_playlist_name(query)
+  local exact = {}
+  if q ~= "" then
+    for _, item in ipairs(playlists) do
+      if compact_playlist_name(item.name) == q then exact[#exact + 1] = item end
+    end
+  end
+  if #exact > 0 then
+    for _, item in ipairs(exact) do item.score = 1 end
+    return exact
+  end
+
+  local ix = "playlist_tmp"
+  local rows = {}
+  for i, item in ipairs(playlists) do rows[i] = { id = i, title = item.name, artist = "", album = "" } end
+  mico.index_clear(ix)
+  mico.index_add(ix, rows)
+  local hits = mico.index_search(ix, tostring(query or ""), { limit = tonumber(limit) or 5, min_score = 0 })
+  mico.index_clear(ix)
+  local out = {}
+  for _, hit in ipairs(hits or {}) do
+    local item = playlists[tonumber(hit.item.id)]
+    if item then item.score = hit.score; out[#out + 1] = item end
+  end
+  return out
+end
+
+function M.play_playlist(query, announce, requested_id)
+  local matches, err
+  if requested_id and requested_id ~= "" then
+    local playlists
+    playlists, err = synology_playlist.list_playlists()
+    if not playlists then return nil, err end
+    matches = {}
+    for _, item in ipairs(playlists) do if tostring(item.id) == tostring(requested_id) then matches[1] = item; break end end
+    if not matches[1] then return nil, "找不到这个群晖歌单" end
+    matches[1].score = 1
+  else
+    matches, err = M.search_playlists(query, 5)
+    if not matches then return nil, err end
+  end
+  if #matches == 0 or (tonumber(matches[1].score) or 0) < 0.55 then
+    local names = table.concat(M.last_playlist_names or {}, "、")
+    local detail = names ~= "" and ("；DSM 返回：" .. names) or "（DSM 没有返回歌单）"
+    return nil, "没找到匹配的群晖歌单" .. detail
+  end
+  if matches[2] and (tonumber(matches[1].score) or 0) - (tonumber(matches[2].score) or 0) < 0.08 then
+    return nil, "歌单名称有歧义，请说得更完整一些"
+  end
+  local tracks
+  tracks, err = synology_playlist.get_playlist_tracks(matches[1].id)
+  if not tracks then return nil, err end
+  for _, track in ipairs(tracks) do
+    track.raw_id = tostring(track.id)
+    track.id = "synology:" .. track.raw_id
+    track.plugin = "synology"
+  end
+  if type(announce) == "function" then pcall(announce, matches[1].name, #tracks) end
+  local ok
+  ok, err = M.start_queue(tracks, matches[1].name)
+  if not ok then return nil, err end
+  mico.log("playlist started:", matches[1].name, "tracks:", #tracks)
+  return { name = matches[1].name, count = #tracks }
 end
 
 function M.set_shell(enabled, allow)
@@ -349,6 +574,54 @@ function M.register(opts)
   })
 
   mico.tool({
+    name = "music_playlist_search",
+    description = "搜索群晖 Audio Station 歌单名称。播放歌单前先调用此工具确认歌单，再将返回的 id 传给 music_playlist_play。",
+    parameters = {
+      type = "object",
+      properties = { query = { type = "string", description = "歌单名称或关键词" }, limit = { type = "number" } },
+      required = { "query" },
+    },
+    handler = function(args)
+      local list, err = M.search_playlists(args.query, tonumber(args.limit) or 5)
+      if not list then return { error = err } end
+      return { playlists = list }
+    end,
+  })
+
+  mico.tool({
+    name = "music_playlist_play",
+    description = "按名称播放群晖 Audio Station 歌单；默认按歌单顺序从头播放一次。",
+    parameters = {
+      type = "object",
+      properties = {
+        id = { type = "string", description = "music_playlist_search 返回的歌单 id" },
+        query = { type = "string", description = "没有 id 时填写歌单名称或关键词" },
+      },
+    },
+    handler = function(args)
+      if (args.id or "") == "" and (args.query or "") == "" then return { error = "需要歌单 id 或 query" } end
+      local result, err = M.play_playlist(args.query, nil, args.id)
+      if not result then return { error = err } end
+      return { playing_playlist = result }
+    end,
+  })
+
+  mico.tool({
+    name = "music_repeat",
+    description = "设置当前歌曲或歌单的循环模式：off=播放一次，one=单曲循环，all=歌单循环。",
+    parameters = {
+      type = "object",
+      properties = { mode = { type = "string", enum = { "off", "one", "all" } } },
+      required = { "mode" },
+    },
+    handler = function(args)
+      local ok, err = M.set_repeat_mode(args.mode)
+      if not ok then return { error = err } end
+      return { repeat_mode = args.mode }
+    end,
+  })
+
+  mico.tool({
     name = "music_play",
     description = "在音箱上播放歌曲。优先传 music_search 返回的 id；只传 query 时播放最佳匹配。",
     parameters = {
@@ -387,7 +660,7 @@ function M.register(opts)
     name = "music_stop",
     description = "停止播放",
     handler = function()
-      speaker.stop()
+      M.stop_playback()
       return "stopped"
     end,
   })
@@ -396,7 +669,14 @@ function M.register(opts)
     name = "music_now_playing",
     description = "当前播放的歌曲信息",
     handler = function()
-      return M.now_playing or { now_playing = false }
+      local current = {}
+      if type(M.now_playing) == "table" then
+        for k, v in pairs(M.now_playing) do current[k] = v end
+      else
+        current.now_playing = false
+      end
+      current.queue = M.queue_info()
+      return current
     end,
   })
 

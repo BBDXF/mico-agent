@@ -10,7 +10,7 @@ M.MASK = "******"
 M.ask = nil       -- function(text) -> reply, err   (set by main.lua)
 M.status_extra = nil  -- function() -> table
 
-local secrets = { { "llm", "api_key" }, { "web", "token" }, { "save", "password" } }
+local secrets = { { "llm", "api_key" }, { "web", "token" }, { "save", "password" }, { "muse", "bridge_token" } }
 
 -- ---------------------------------------------------------------- turns
 -- Turn: {id, time, source, user, route, reply, error?, duration_ms, status,
@@ -155,6 +155,7 @@ local function status()
     uptime = os.time() - M.started,
     started = os.date("%Y-%m-%d %H:%M:%S", M.started),
     now_playing = tools.now_playing or false,
+    playback_queue = tools.queue_info(),
     index_size = mico.index_size("music"),
     index = require("indexer").info(),
     plugins = plugins.list(),

@@ -10,7 +10,7 @@ make test     # 单元测试 + 集成测试（Python mock OpenAI 服务，dry-ru
 ```
 
 依赖：g++（C++14）、libcurl 开发头文件。Lua 5.1.5 与 nlohmann/json 3.11.3 已放在 `third_party/`。
-目标固件（1.77.6）自带 glibc 2.25、libstdc++ 6.0.22、libcurl 4.4.0，只动态链接 libc/libstdc++/libcurl。
+LX06 / L06A 固件 1.77.6 自带 glibc 2.25、libstdc++ 6.0.22、libcurl 4.4.0；参考 OH2P 也报告了 armhf loader 和这些兼容库。程序只动态链接 libc/libstdc++/libcurl。
 
 `make` 通过 `-D` 注入版本信息：`MICO_VERSION`（默认 `0.2.2`，可 `make MICO_VERSION=x.y.z`）、
 构建时 `git rev-parse --short HEAD`（失败为 `unknown`）、构建时间；运行时 `mico.version()` / `GET /api/status` 的 `version` 字段
@@ -37,6 +37,7 @@ MICO_INSTRUCTION_LOG=/tmp/test.log MICO_DRY_RUN=1 build/mico-agent   # 跟随日
 | `llm` | `base_url` `api_key` `model` `timeout_ms`（默认 60000） `extra` | OpenAI 兼容接口；`extra` 合并进请求体（如 `{"enable_thinking":false}`） |
 | `agent` | `system_prompt` `max_steps`（默认 8） `max_history`（默认 20） | Agent 提示词与循环限制 |
 | `fast_path` | `enabled`（默认 true） `min_score`（0.6） `margin`（0.15） | “播放 X” 快路径：最佳分 ≥ min_score 且（≥0.8 或领先第二名 ≥ margin）时跳过 LLM |
+| `muse` | `routes`（最多 8 个 `{name,host,port}`） `bridge_token` `timeout_ms`（默认 90000） | 语音“问问<name>，问题”通过局域网桥接到指定 Linux Muse Gadget；桥接令牌不回显 |
 | `web` | `listen`（默认 `0.0.0.0:8080`，空串关闭） `token` | Web UI / API；`token` 非空时需 `Authorization: Bearer` 或 `?token=` |
 | `mdns` | `enabled`（默认 true） `hostname`（默认 `mico`，`[a-z0-9-]` 1–63 字符） `instance`（默认 `小爱音箱 mico-agent`） | 内置 mDNS 应答（`src/mdns.cpp`，仅 IPv4，UDP 5353，主循环非阻塞轮询）：A `<hostname>.local`、PTR `_http._tcp.local` → `<instance>._http._tcp.local`、SRV/TXT（`path=/`、`version=`）、`_services._dns-sd._udp.local`；TTL 120；每 30 秒检查地址变化并重新广播；绑定失败只记日志。修改每秒检查一次即时生效 |
 | `shell` | `enabled` | 是否注册 `run_shell` |
@@ -46,9 +47,16 @@ MICO_INSTRUCTION_LOG=/tmp/test.log MICO_DRY_RUN=1 build/mico-agent   # 跟随日
 
 环境变量：`MICO_LLM_BASE_URL`、`MICO_LLM_API_KEY`、`MICO_LLM_MODEL`、
 `MICO_WEB_LISTEN`、`MICO_WEB_TOKEN`、`MICO_ENABLE_SHELL`、`MICO_PLUGINS_DIR`、`MICO_PLAYBACK`、`MICO_INSTRUCTION_LOG`、`MICO_DRY_RUN=1`、`MICO_MDNS=0`（关闭 mDNS；测试用 `MICO_MDNS_PORT` 改端口）。
+Synology 插件另读 `MICO_SYNO_URL`、`MICO_SYNO_USER`、`MICO_SYNO_PASS`、`MICO_SYNO_OTP`、`MICO_SYNO_DEVICE_NAME`、`MICO_SYNO_DEVICE_ID`、`MICO_SYNO_TIMEOUT`、`MICO_SYNO_PAGE_SIZE`；插件环境变量覆盖 `scripts/plugins/synology.lua` 顶部的对应配置。
 Web 保存时合并写回配置文件（格式化 JSON）并立即生效（LLM、Agent、快路径、插件、shell、播放参数、poll_ms）；
 `web.listen`、`plugins.dir`、`instruction_log` 需重启（schema 中标记 `restart: true`）。
 所有字段的说明见 `scripts/lib/config.lua` 中的 `M.schema`。
+
+### Muse Gadget 名字路由
+
+配置页“Muse 路由”中每行填写语音名字、Linux Gadget 主机名/IP 和端口（默认 `8765`）。设置 `takeover.mode` 为 `music` 或 `all` 后，说“问问<名字>”“请问问<名字>”“请问<名字>”“问一下<名字>”或“问下<名字>”，接上问题后会优先匹配路由；空格差异不影响名字匹配。每个名字最多 8 条，名称不能重复。`bridge_token` 是所有 Gadget 桥接服务共用的 Bearer 令牌；未填写时本程序拒绝发送请求。
+
+桥接服务 HTTP 协议：`POST http://<host>:<port>/ask`，请求头 `Authorization: Bearer <bridge_token>`、`Content-Type: application/json`，请求体 `{"text":"用户问题"}`；成功时返回 `200 application/json`，正文 `{"reply":"Muse 的文本回复"}`。mico-agent 将 `reply` 交给音箱 TTS；超时、HTTP 错误或响应格式错误会出现在该轮对话详情。令牌通过 HTTP 明文传输，因此只应在可信局域网使用，不能把 Gadget 桥接端口直接暴露到公网。此接口是下一步 Linux Gadget 服务需要实现的契约；mico-agent 现有 `POST /api/ask` 仍然调用本地配置的大模型，不是 Muse 接口。
 
 ## 音乐插件（`scripts/plugins/*.lua`）
 
@@ -66,13 +74,29 @@ Web 保存时合并写回配置文件（格式化 JSON）并立即生效（LLM�
   `setup(M.config, all_cfg)` 在加载与配置变更时调用。`config.json` 不再有插件配置段。
   环境变量仍在运行时覆盖：`MICO_FN_URL/USER/PASS/AUTHX_PREFIX/CLIENT_KEY/TIMEOUT`，在线音乐源插件也有对应的环境变量。
 - 新插件骨架：`GET /api/plugin-template`（两种类型都有注释说明）。
-- `fnos` 与在线音乐源插件为内置插件（`builtin=true`）：可禁用、不可删除。
+- `synology`、`fnos` 与在线音乐源插件为内置插件（`builtin=true`）：可禁用、不可删除。
 
-内置：`fnos`（飞牛音乐本地曲库，基于 `lib/fnmusic.lua`）、在线音乐源插件（获取在线音乐，可配置 Cookie/UA/每页条数；
+内置：`synology`（DSM Audio Station 本地曲库）、`fnos`（飞牛音乐本地曲库，基于 `lib/fnmusic.lua`）、在线音乐源插件（获取在线音乐，可配置 Cookie/UA/每页条数；
 播放只选普通 AAC 音轨，从不选杜比或无损音轨；无歌词）。
 `fnos` 同步索引时跳过音箱 ffmpeg 解不了的格式（`skip_formats`，默认 ape/wma/dsf/dff/alac；依次看 `format`、`codec`、
 路径扩展名，未知格式保留）。
 管理器 `lib/plugins.lua`：加载/启停（写回 `plugins.enabled`）/保存（`loadstring`+`pcall` 校验、旧版本存 `.bak`、热重载、本地插件立即重建索引）/删除。
+
+### Synology Audio Station 插件
+
+`scripts/plugins/synology.lua` 使用 DSM Web API：先通过 `/webapi/entry.cgi` 查询 `SYNO.API.Auth`、`SYNO.AudioStation.Song`、`SYNO.AudioStation.Stream` 的实际路径和版本，再用 DSM Auth API 获取 `sid` / `SynoToken`。曲库由 Song `list` 按 `offset` / `limit` 分页读取，播放使用 Stream `stream`；会话参数只交给本地流代理转发，不写入日志。目标 DSM 需安装并启用 Audio Station，建议给插件使用单独的只读账号。
+
+`scripts/lib/synology_playlist.lua` 独立发现可选的 `SYNO.AudioStation.Playlist` API，复用已加载插件的配置与 DSM 会话，不覆盖插件源码里的连接参数。它调用 Playlist `list` / `getinfo` 读取队列；DSM 若没有返回歌单曲目列表，会显示明确错误，Song / Stream 单曲播放仍可继续使用。
+
+配置 `M.config.url` 为 DSM 根地址（如 `https://nas.example.com:5001`），不要包含 `/webapi`；账号配置在 `user` / `pass`，也可用 `MICO_SYNO_URL` / `MICO_SYNO_USER` / `MICO_SYNO_PASS` 覆盖。推荐用权限为 `600` 的本机环境文件保存凭证，避免把密码放进受版本控制的插件源码。若 DSM 登录要求 2FA，首次登录时通过 `MICO_SYNO_OTP` 提供当前验证码；插件会请求 DSM 设备令牌并以权限 `600` 保存到 `/data/mico-agent/synology.device_id`，之后用 `device_name` / `device_id` 登录。若 DSM 没有返回设备令牌，重启后仍需提供新的 OTP。插件默认每页取 200 首，最多请求 1000 首一页；Audio Station 元数据里的 FLAC 会保留，能从元数据识别出的 APE/WMA/DSD/ALAC 会跳过，格式未知的曲目保留。`available()` 只检查配置是否完整，真实登录在同步曲库时发生；会话每 20 分钟更新。
+
+开发验证边界：适配参考设备的 `SYNO.API.Info` 已报告 Song v1–3、Stream v1–2；该结果不验证凭证、曲目字段形状或实际 FLAC 播放。第一次部署应先同步曲库并播放一首 FLAC；登录权限、流参数或 NAS 反向代理路由有差异时，错误会显示在索引同步状态里。不要把 DSM 密码或 `sid` 发到聊天或日志中。
+
+### OH2P 适配
+
+OH2P 的内核可能报告 `aarch64`，但目标运行环境应通过 `/lib/ld-linux-armhf.so.3` 确认使用项目 `armhf` 包；本项目编译的 armhf 二进制沿用 glibc 2.25 兼容目标。默认识别日志仍是 `/tmp/mico_aivs_lab/instruction.log`，播放仍走 `/usr/sbin/tts_play.sh` 和 `ubus mediaplayer`。部分 OH2P shell 的 `PATH` 不含 `/usr/bin`，因此 `speaker.pause_native()` 优先按 `/usr/bin/mphelper` 等绝对路径查找，再回退到 `command -v`；命令缺失或不可执行时跳过暂停并记录提示，不影响程序启动。
+
+可在音箱上运行 `sh tools/check_oh2p.sh` 做只读预检。它只输出依赖是否存在、ubus 方法和识别事件计数，不会打印识别文本，也不会改动设备。OH2P 的 root 文件系统和启动脚本因固件而异；部署到 `/data` 后应先保持 `takeover.mode=off`，确认网页、曲库同步和 TTS/FLAC 播放正常，再开启 `music`。
 
 ## Web UI 与 HTTP API
 
@@ -195,7 +219,10 @@ C++ 与 `mico.log` 共用一个日志出口（`src/logger.cpp`）：配置 `log.
 | `http_request` | 类 curl 的 HTTP 请求 |
 | `music_search` | 曲库模糊搜索（首次自动同步索引；无结果回退飞牛服务端搜索，仍无好结果时附带在线结果）；`online=true` 只搜在线音乐源插件；`kind="audio"` 搜播客/访谈等长音频 |
 | `music_play` / `music_stop` / `music_now_playing` | 播放控制；`music_play` 接受本地与在线 id（`<插件名>:<id>`），裸 id 视为飞牛 guid |
+| `music_playlist_search` / `music_playlist_play` / `music_repeat` | 群晖 Audio Station 歌单检索、播放和循环控制；mico-agent 维护本地队列，曲目结束时切到下一首 |
 | `get_time` | 时间（自定义工具示例：`scripts/tools/get_time.lua`） |
+
+语音歌单命令：“播放歌单<名称>”或“播放<名称>歌单”；循环控制为“单曲循环”“歌单循环”“循环播放”“取消循环”，队列中“下一首”跳到下一曲。默认播放一遍。语音“停止播放”（也接受“暂停播放”）会停止当前音频并清空队列；只要队列还在播放，即使接管模式改为 `off`，停止命令仍由 mico-agent 处理。曲目结束通过 OH2P/LX06 `mediaplayer` 状态轮询判断；下载播放模式使用曲目时长兜底。
 
 曲库索引在保存插件时自动重建，也可 `POST /api/index/sync` 手动重新同步。
 
@@ -214,10 +241,10 @@ C++ 与 `mico.log` 共用一个日志出口（`src/logger.cpp`）：配置 `log.
 handler 返回字符串或表（编码为 JSON）；`error()` 或返回 `{error=...}` 计为失败。
 配置 `tools.disabled = {name=true}`、`tools.descriptions = {name="覆盖描述"}`；内置工具可禁用、改描述，不能编辑/删除。
 
-快路径（`scripts/main.lua`）：“播放/我想听/来首/来点…”类请求先本地模糊搜索，结果明确时直接播放、不调用 LLM；
+快路径（`scripts/main.lua`）：“播放/请播放/请听/我想听/来首/来点…”类请求先本地模糊搜索，结果明确时直接播放、不调用 LLM；
 只匹配到歌手时随机播放该歌手的歌；有歧义交给 LLM 追问。“在线播放X”“网上找X”等前缀直接走在线搜索。
 
-对话记录：每轮 `{id, time, source:"voice"|"web", user, route:"fast"|"llm", reply, error?, duration_ms, status,
+对话记录：每轮 `{id, time, source:"voice"|"web", user, route:"fast"|"llm"|"ignored"|"music_control"|"muse", route_name?, reply, error?, duration_ms, status,
 steps:[{kind:"tool"|"llm"|"play"|"tts"|"info", name, args?, result?(截断 500 字节), ms, error?}]}`，
 记录 LLM 往返、工具调用耗时、快路径决策（如 `快路径：匹配 七里香/周杰伦 0.97`）、播放 URL 与 TTS 文本。
 
@@ -228,7 +255,7 @@ steps:[{kind:"tool"|"llm"|"play"|"tts"|"info", name, args?, result?(截断 500 �
 
 脚本约定：全局 `config` 表（`instruction_log`、`poll_ms`（每轮读取）、`from_start`、`web.listen`）由 C++ 读取；全局 `on_input(text, dialog_id)` 处理每条最终识别结果。
 
-语音接管（`scripts/main.lua`）：`on_input` 按 `takeover.mode` 分流——`off`（默认）只记录为 `route="ignored"`，不碰原生助手；`music` 先匹配 `takeover.keywords` 前缀（先把全角“，”换成“,”，跳过开头空格/标点，仅 ASCII 不区分大小写），命中则去掉关键词后走 快路径 → LLM，否则调用 `plan_fast_play`（只做搜索查找，无播报/播放）判断是否点歌，不是则直接返回交给原生助手；`all` 为接管全部。`speaker.pause_native()` 只在确定接管后调用。快路径拆成 `plan_fast_play`（决策）和 `exec_fast_play`（播报 + 播放）；`web.ask`（网页提问）不受模式影响。
+语音接管（`scripts/main.lua`）：`on_input` 按 `takeover.mode` 分流——`off`（默认）不接管语音；队列播放期间仍处理停止、下一首和循环控制。开启接管后优先匹配群晖歌单命令与 Muse 名字路由，再进入 `music` / `all` 原有逻辑。`music` 先匹配 `takeover.keywords` 前缀（跳过开头空格/标点，匹配时忽略关键词和识别文本中的空格，英文不区分大小写），命中则去掉关键词后走快路径 → LLM；点歌请求先尝试快路径，未命中或有歧义时交给 LLM，停止播放短语走本地播放控制；其他语音标记为 `route="ignored"` 并交还原生助手；`all` 接管全部。`speaker.pause_native()` 只在确定接管后调用。快路径拆成 `plan_fast_play`（决策）和 `exec_fast_play`（播报 + 播放）；`web.ask`（网页提问）不受模式影响。对话页显示 Muse、歌单和播放控制路由。
 
 `require` 会搜索脚本目录及其 `lib/`。
 
@@ -243,7 +270,7 @@ steps:[{kind:"tool"|"llm"|"play"|"tts"|"info", name, args?, result?(截断 500 �
 | [solariun/easyai](https://github.com/solariun/easyai) | C++17 | Session/Tool API 设计、cpp-httplib Web UI、MCP |
 | [Jimdrews/forgeant](https://github.com/Jimdrews/forgeant) | C++23 | 类型安全工具与 ReAct 循环；C++23 无法用于 GCC 6 目标，仅参考 API |
 
-结论：没有可直接用于 GCC 6 / armv7 / 256 MB 目标的现成框架（多为 C++17–23 或依赖较重），因此自写一个很小的内核，设计上参考 ptrclaw（模块化、裁剪）与 adam（嵌入式内存习惯）。
+结论：没有可直接用于 GCC 6 / ARMhf 音箱目标的现成框架（多为 C++17–23 或依赖较重），因此自写一个很小的内核，设计上参考 ptrclaw（模块化、裁剪）与 adam（嵌入式内存习惯）。
 
 ## 下一步
 

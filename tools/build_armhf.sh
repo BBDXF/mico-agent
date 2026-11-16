@@ -1,6 +1,6 @@
 #!/bin/sh
 # Cross-build the armhf release inside debian:stretch (gcc 6.3, glibc 2.24,
-# libstdc++ 6.0.22 -- matches the LX06 firmware). Usage from the repo root:
+# libstdc++ 6.0.22 -- matches LX06 and the reported OH2P armhf userspace). Usage from the repo root:
 #   docker run --rm -v "$PWD:/src" -w /src debian:stretch sh tools/build_armhf.sh
 # (also works with podman). Extra args are passed to make (e.g. VERSION=1.2.3).
 set -eu

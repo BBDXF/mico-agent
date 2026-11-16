@@ -67,6 +67,8 @@ dist: $(BUILD)/mico-agent
 	cp $(BUILD)/mico-agent.stripped $(DIST_DIR)/mico-agent
 	mkdir -p $(DIST_DIR)/scripts
 	cp -r scripts/lib scripts/plugins scripts/tools scripts/web scripts/main.lua $(DIST_DIR)/scripts/
+	mkdir -p $(DIST_DIR)/tools
+	cp tools/check_oh2p.sh $(DIST_DIR)/tools/
 	cp config.example.json README.md $(DIST_DIR)/
 	if [ -f LICENSE ]; then cp LICENSE $(DIST_DIR)/; fi
 	tar -C $(BUILD)/dist -czf $(BUILD)/$(DIST_NAME).tar.gz $(DIST_NAME)

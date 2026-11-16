@@ -14,6 +14,7 @@ M.defaults = {
       "你是运行在小爱音箱上的语音助手。回答会被直接朗读，请用简短口语化的中文，不要使用 Markdown。",
       "用户的话来自语音识别，可能有同音字或错别字。点歌时先用 music_search 搜索（它能容忍识别错误），",
       "用户要求播放时，只要有一个结果明显最匹配就立即调用 music_play，不要征求确认；只有多个结果同样可能时才简短询问。",
+      "用户要求播放群晖 Audio Station 歌单时，先用 music_playlist_search 找歌单，再用 music_playlist_play 播放；循环控制用 music_repeat。",
       "曲库里外文歌手多用原名（如艾薇儿=Avril Lavigne），中文名搜不到时换原名再搜一次。",
       "本地曲库没有时 music_search 会自动在线搜索；用户明确要求在线/B站时传 online=true。",
       "播客、访谈、讲座、相声、评书、有声书、节目、脱口秀、新闻等非歌曲内容，music_search 传 kind=\"audio\"。",
@@ -25,10 +26,12 @@ M.defaults = {
   fast_path = { enabled = true, min_score = 0.6, margin = 0.15 },
   -- Voice takeover: "off" (default, native assistant untouched) | "music" | "all".
   takeover = { mode = "off", keywords = "请问,问问AI,小爱AI" },
+  -- Named Muse Gadget bridges. Each route targets one paired Linux Gadget host.
+  muse = { routes = setmetatable({}, { __jsontype = "array" }), bridge_token = "", timeout_ms = 90000 },
   poll_ms = 50,
   -- Local-library index sync: on startup, every N minutes, and once on a search miss.
   index = { sync_on_start = true, sync_interval_min = 360, miss_resync_min = 10 },
-  -- Plugin settings (飞牛 / B站 ...) live in each plugin file's M.config.
+  -- Plugin settings (群晖 / 飞牛 / 在线源 ...) live in each plugin file's M.config.
   web = { listen = "0.0.0.0:8080", token = "" },
   -- Built-in mDNS responder: http://<hostname>.local:<web port>
   mdns = { enabled = true, hostname = "mico", instance = "小爱音箱 mico-agent" },
@@ -88,8 +91,11 @@ M.schema = {
   { key = "fast_path.enabled", label = "启用快路径", type = "bool", help = "“播放 X” 匹配明确时跳过 LLM 直接播放" },
   { key = "fast_path.min_score", label = "快路径最低分", type = "number", min = 0, max = 1, help = "最佳匹配低于此分数时交给 LLM" },
   { key = "fast_path.margin", label = "快路径领先差", type = "number", min = 0, max = 1, help = "第一名领先第二名至少此分差才直接播放（分数 ≥0.8 时总是播放）" },
-  { key = "takeover.mode", label = "语音接管模式", type = "enum", options = { "off", "music", "all" }, help = "默认 off（关闭）：不接管任何语音，小爱原生助手照常处理，需在此显式开启。music：只接管点歌（快路径能直接播放的请求）和以接管关键词开头的话；all：接管所有语音（闹钟、智能家居等原生功能将失效）。web 控制台提问不受影响。保存后立即生效" },
-  { key = "takeover.keywords", label = "接管关键词", type = "string", help = "music 模式下，以这些词开头的话交给本程序（去掉关键词后先走快路径再交给 LLM）。逗号分隔（中英文逗号均可），英文不区分大小写" },
+  { key = "takeover.mode", label = "语音接管模式", type = "enum", options = { "off", "music", "all" }, help = "默认 off（关闭）：不接管任何语音，小爱原生助手照常处理，需在此显式开启。music：接管点歌；快路径未命中时交给 LLM；以接管关键词开头的话交给 LLM；也接管停止播放命令。all：接管所有语音（闹钟、智能家居等原生功能将失效）。web 控制台提问不受影响。保存后立即生效" },
+  { key = "takeover.keywords", label = "接管关键词", type = "string", help = "music 模式下，以这些词开头的话交给本程序（去掉关键词后先走快路径再交给 LLM）。逗号分隔（中英文逗号均可），匹配时忽略关键词和识别文本中的空格，英文不区分大小写" },
+  { key = "muse.routes", label = "Muse 名字路由", type = "json", help = "添加路由后说“问问<名字>”“请问问<名字>”或“请问<名字>”，再接上问题。主机只填局域网 hostname/IP，端口默认 8765；Linux Gadget 桥接服务需实现 POST /ask 并返回 {reply:string}。路由只在 takeover.mode=music/all 时接管" },
+  { key = "muse.bridge_token", label = "Gadget 桥接令牌", type = "secret", help = "发送给所有 Linux Gadget 桥接服务的共享 Bearer 令牌；各主机桥接服务需配置相同令牌。未设置时 Muse 路由拒绝发送。HTTP 仅供可信局域网使用，不要把桥接端口暴露到公网" },
+  { key = "muse.timeout_ms", label = "Muse 请求超时（毫秒）", type = "number", integer = true, min = 1000, max = 600000, help = "等待 Linux Gadget 返回 Muse 回复的最长时间" },
   { key = "index.sync_on_start", label = "启动时同步曲库", type = "bool", help = "启动后立即从本地插件（飞牛等）重建曲库索引" },
   { key = "index.sync_interval_min", label = "定时同步间隔（分钟）", type = "number", min = 0, max = 10080, help = "每隔多少分钟自动重建曲库索引；0 关闭定时同步" },
   { key = "index.miss_resync_min", label = "未命中重同步间隔（分钟）", type = "number", min = 0, max = 10080, help = "本地搜索最佳分数低于快路径最低分、且距上次同步超过此分钟数时，先重新同步再搜一次；0 关闭" },
@@ -147,6 +153,8 @@ function M.copy(v)
   if type(v) ~= "table" then return v end
   local out = {}
   for k, x in pairs(v) do out[k] = M.copy(x) end
+  local mt = getmetatable(v)
+  if mt and mt.__jsontype then setmetatable(out, { __jsontype = mt.__jsontype }) end
   return out
 end
 
@@ -267,6 +275,27 @@ local function validate_value(f, v)
     return n
   elseif t == "json" then
     if type(v) ~= "table" then return nil, f.key .. " 必须是 JSON 对象" end
+    if f.key == "muse.routes" then
+      if #v > 8 then return nil, "muse.routes 最多配置 8 个路由" end
+      local names = {}
+      for i, route in ipairs(v) do
+        if type(route) ~= "table" then return nil, "muse.routes 第 " .. i .. " 项必须是对象" end
+        route.name = type(route.name) == "string" and route.name:match("^%s*(.-)%s*$") or ""
+        route.host = type(route.host) == "string" and route.host:match("^%s*(.-)%s*$") or ""
+        if route.name == "" or #route.name > 96 then return nil, "Muse 名字不能为空且不能超过 32 个汉字" end
+        if route.host == "" or #route.host > 253 or not route.host:match("^[%w%.%-]+$") then
+          return nil, "Muse 主机请填写 hostname 或 IP，不要带 http://、端口或路径"
+        end
+        local key = route.name:gsub("%s+", ""):lower()
+        if names[key] then return nil, "Muse 名字不能重复：" .. route.name end
+        names[key] = true
+        local port = tonumber(route.port or 8765)
+        if not port or port ~= math.floor(port) or port < 1 or port > 65535 then
+          return nil, "Muse 端口必须是 1–65535 的整数"
+        end
+        route.port = port
+      end
+    end
   end
   return v
 end
